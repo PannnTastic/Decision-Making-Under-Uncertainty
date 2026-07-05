@@ -189,7 +189,7 @@ not part of the original Julia Academy course. More will be added over time.
 
 ## HandsOn: MDP
 
-[![Pluto](https://img.shields.io/badge/HandsOn%20MDP-notebook-389826)](https://htmlview.glitch.me/?https://github.com/PannnTastic/Decision-Making-Under-Uncertainty/blob/master/html/HandsOnMDP.jl.html)
+[![Pluto](https://img.shields.io/badge/HandsOn%20MDP-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/HandsOnMDP.jl.html)
 
 Hands-on practice building and solving Markov Decision Processes with `POMDPs.jl`
 and `QuickPOMDPs.jl`.
