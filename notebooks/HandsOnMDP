@@ -1,0 +1,2315 @@
+### A Pluto.jl notebook ###
+# v1.0.1
+
+using Markdown
+using InteractiveUtils
+
+# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
+macro bind(def, element)
+    #! format: off
+    return quote
+        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
+        local el = $(esc(element))
+        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
+        el
+    end
+    #! format: on
+end
+
+# ╔═╡ 268eeb20-76fd-11f1-ad7c-a3a23f983fe8
+using POMDPs,QuickPOMDPs,POMDPModelTools,POMDPPolicies,Random,Parameters,Plots;default(fontfamily="Computer Modern", framestyle=:box)
+
+# ╔═╡ 01ba4392-dbad-4270-9822-2181a55ee356
+# ╠═╡ show_logs = false
+using MCTS
+
+# ╔═╡ 0386e7f2-2ae2-4b86-96f7-19f606ac5058
+using PlutoUI
+
+# ╔═╡ 86b8a07f-468d-4fee-9fed-38b98813214d
+using D3Trees
+
+# ╔═╡ f53d51eb-6711-4423-b6b1-c1bf721473cd
+using JSON
+
+# ╔═╡ 6835caa1-0e72-4406-baef-bcfb9894b13b
+using DiscreteValueIteration
+
+# ╔═╡ b3e618ca-ed0c-446b-b956-a66fa26b083c
+using TabularTDLearning
+
+# ╔═╡ 42610446-b92c-4d5a-a24c-8d252a64b952
+using ColorSchemes, Colors
+
+# ╔═╡ dbb9d285-dba4-45e1-b5ee-00e8ee4688cf
+md"""
+## HandsOn MDP
+"""
+
+
+# ╔═╡ a0528e7f-8796-4765-b3d0-fda20e371eb3
+md"""
+First we import packages we need
+"""
+
+# ╔═╡ 8474a9ba-c768-4f5a-af2f-a0a432f179fc
+md"""
+### GridWorld
+"""
+
+# ╔═╡ 0aec5dc2-b0f7-4f8b-85af-38d8ec3236ad
+md"
+Declare GridWorld System to MDP where the behaviour depends on state and actions
+"
+
+# ╔═╡ d38ae102-edbc-4d4f-9c5e-27e3e8fc3ee4
+md"Declare GridWorld parameters"
+
+# ╔═╡ 87d7ab96-6089-4598-a88c-677adf1b38d1
+md"""
+### State Space
+"""
+
+# ╔═╡ ffb17dc5-613f-459d-a051-bee69b241cf4
+struct State
+	x::Int
+	y::Int
+end
+
+# ╔═╡ e7c845e2-6d24-427f-9277-c690b1def22f
+md"define the (==) function to compare State types"
+
+# ╔═╡ e9821377-c3b3-49d1-9d4f-83b31fa2bba9
+Base.:(==)(s1::State, s2::State) = (s1.x == s2.x) && (s1.y == s2.y)
+
+# ╔═╡ d1c17a14-4dd9-4237-a147-82c4fef4edc2
+@with_kw struct GridWorldParameters
+	size::Tuple{Int,Int} = (10,10)
+	null_state::State=State(-1,-1)
+	p_transition::Real=0.7
+end
+
+# ╔═╡ 44467390-1863-4824-9269-33ea808afdc5
+params = GridWorldParameters();
+
+# ╔═╡ c2608460-64d5-41ea-aef8-ade74170ded7
+𝒮=[[State(x,y) for x=1:params.size[1], y=1:params.size[2]]..., params.null_state]
+
+# ╔═╡ 35516802-97bd-40dc-bc03-146e87e17eca
+md"""
+### Action Space
+"""
+
+# ╔═╡ f712d4a3-abfd-40d1-a13e-25f22dc4bee4
+@enum Action UP DOWN RIGHT LEFT
+
+# ╔═╡ ee36abe2-029e-42df-ac4f-56fc67e9aef4
+abstract type GridWorld <: MDP{State, Action} end
+
+# ╔═╡ 82568711-3dcf-476c-a64d-c28e94bc1677
+# helper functions to get all the values from a policy
+begin
+	function one_based_policy!(policy)
+		# change the default action in the policy (all zeros) to all ones (if needed)
+		if all(iszero, policy.policy)
+			policy.policy[:] = ones(eltype(policy.policy), length(policy.policy))
+		end
+	end
+
+    function get_rewards(mdp::QuickMDP{GridWorld}, policy::Policy)
+        null_state = params.null_state
+        valid_states = setdiff(states(mdp), [null_state])
+        U = map(s->reward(mdp, s), valid_states)
+    end
+
+    function values(mdp::QuickMDP{GridWorld}, policy::Policy)
+        null_state = params.null_state
+        valid_states = setdiff(states(mdp), [null_state])
+        U = map(s->value(policy, s), valid_states)
+    end
+
+    function values(mdp::QuickMDP{GridWorld}, planner::MCTSPlanner)
+        null_state = params.null_state
+        valid_states = setdiff(states(mdp), [null_state])
+        U = []
+        for s in valid_states
+            u = 0
+            try
+                u = value(planner, s)
+            catch
+                # state not in tree
+            end
+            push!(U, u)
+        end
+        return U
+    end
+
+    function values(mdp::QuickMDP{GridWorld}, policy::ValuePolicy)
+        maxU = mapslices(maximum, policy.value_table, dims=2)
+        return maxU[1:end-1] # remove null_state
+    end
+
+    struct NothingPolicy <: Policy end
+    
+    # Use this to get a stationary grid of rewards
+    function values(mdp::QuickMDP{GridWorld}, policy::Union{NothingPolicy, FunctionPolicy})
+        null_state = params.null_state
+        valid_states = setdiff(states(mdp), [null_state])
+        rewards = map(s->reward(mdp, s), valid_states)
+    end
+end
+
+# ╔═╡ c34e798b-86ac-41a2-857c-49a9c18c6d63
+# create policy grid showing the best action in each state
+function policy_grid(policy::Policy, xmax::Int, ymax::Int)
+    arrows = Dict(UP => "↑",
+                  DOWN => "↓",
+                  LEFT => "←",
+                  RIGHT => "→")
+
+    grid = Array{String}(undef, xmax, ymax)
+    for x = 1:xmax, y = 1:xmax
+        s = State(x, y)
+        grid[x,y] = arrows[action(policy, s)]
+    end
+
+    return grid
+end
+
+# ╔═╡ 7092ad03-9c9d-4cb7-8487-f26aaddcbe39
+𝒜 = [UP,DOWN,RIGHT,LEFT]
+
+# ╔═╡ 5c27b02b-a3d5-4053-a519-fff3fbe8b00c
+begin
+	const MOVEMENTS = Dict(UP    => State(0,1),
+						   DOWN  => State(0,-1),
+						   RIGHT => State(1,0),
+						   LEFT  => State(-1,0));
+	
+	Base.:+(s1::State, s2::State) = State(s1.x + s2.x, s1.y + s2.y)
+	##to define how to add two states together 
+end
+
+# ╔═╡ 4a21f9a1-b8d5-43bc-b4f0-6bca9ac2d209
+md"""
+### Transition Function
+"""
+
+# ╔═╡ 3cb9145e-3add-435f-8a64-b2220d0187ee
+md"""
+### Reward Function
+"""
+
+# ╔═╡ 97fee9e5-41dd-406a-8c2f-ea601fc94e7e
+function R(s, a=missing)
+	if s == State(4,3)
+		return -10
+	elseif s == State(4,6)
+		return -5
+	elseif s == State(9,3)
+		return 10
+	elseif s == State(8,8)
+		return 3
+	else
+		return 0
+	end
+end
+
+# ╔═╡ c92f1843-a907-4f8f-8941-f4ca5071062c
+inbounds(s::State) = 1 ≤ s.x ≤ params.size[1] && 1 ≤ s.y ≤ params.size[2]
+
+# ╔═╡ 9c4f47d7-244a-4c1f-be2e-9414cfd52f5b
+function T(s::State, a::Action)
+	if R(s) != 0
+		return Deterministic(params.null_state) 
+		## check if the the states yield a reward
+	end
+	Nₐ = length(𝒜) ## This counts the total number of available actions
+	next_states = Vector{State}(undef,Nₐ + 1)
+	probabilities = zeros(Nₐ + 1)
+	p_transition = params.p_transition
+	for (i, a′) in enumerate(𝒜) 
+		##This starts a loop that iterates through every possible action
+		prob = (a′ == a) ? p_transition : (1 - p_transition) / (Nₐ - 1)
+		destination = s + MOVEMENTS[a′]
+		next_states[i+1] = destination
+
+		if inbounds(destination)
+			probabilities[i+1] += prob
+		end
+	end
+	
+	# handle out-of-bounds transitions
+	next_states[1] = s
+	probabilities[1] = 1 - sum(probabilities)
+
+	return SparseCat(next_states, probabilities)
+end
+
+# ╔═╡ df7039f2-8429-4a25-88ed-070241c24aaf
+md"""
+### Discount factor
+"""
+
+# ╔═╡ 57bd0a34-687c-4d73-9824-c6067dac7b93
+@bind γ Slider(0:0.05:1, default=0.95, show_value=true)
+
+# ╔═╡ 97a156ee-9a3f-4e5e-aa23-c9fe522ea3b5
+md"""## Termination
+When the agent is in the null_state (which we've arbitrarily defined), then it is in a terminal state. Note for this problem, that termination cannot be "when you're in a reward state", but has to be a separate null_state that we transition to after we taken an action in a reward state (thus, after we collect the reward)."""
+
+# ╔═╡ 4392c5a0-10b8-4e9e-8aa4-4144be8dd353
+termination(s::State) = s == params.null_state
+
+# ╔═╡ 1b404ac4-b395-4e6d-b309-de9612040d5b
+md"""## MDP Formulation (QuickPOMDPs.jl) 
+We can use the convinient package QuickPOMDPs to setup the MDP problem formulation for the Grid World problem. We set the initial state distribution to be the entire state space 
+, which will be sampled uniformly. A separate notebook is provided that creates the MDP in the "traditional" POMDPs manner, but we recommend QuickPOMDPs to get started.
+
+We define the GridWorld abstract MDP type so we can reference it in other methods."""
+
+# ╔═╡ 5932dbbb-8b1f-4855-96d2-3326ad76a2c4
+md"""## Solutions(Offline) 
+Depending on the type of problem (discrete/continuous states or actions, model-free vs. model-based), we can pick an MDP solver that meets our needs. For a list of MDP (and POMDP) solvers based on online/offline solutions and continuous/discrete spaces, see the README of POMDPs.jl."""
+
+# ╔═╡ fc4c7e47-78e6-4124-81d8-5e3722c339fc
+solver = ValueIterationSolver(max_iterations=30);
+
+# ╔═╡ 71b6156d-7737-459c-99b6-9ceb19c8a419
+function plot_transition_probability(distr)
+	if distr isa Deterministic
+		vals = [distr.val]
+		probs = [1]
+	else
+		vals = distr.vals
+		probs = distr.probs
+	end
+	xtick_states = ["($(v.x), $(v.y))" for v in vals]
+	cmap_probs = ColorScheme([colorant"#B3BCDB", colorant"#4063D8"])
+	bar(probs,
+		xformatter = x->1 <= x <= length(xtick_states) ? xtick_states[Int(x)] : "",
+		label=false,
+		aspect_ratio=5,
+		group=xtick_states,
+		color=map(v->get(cmap_probs, v), probs))
+	title!("Transition Probability\nDistribution")
+	xlabel!("next state 𝑠′")
+	ylabel!("probability")
+	ylims!(0, 1.1)
+	xlims!(0, 6)
+	yticks!(0:0.1:1)
+end
+
+# ╔═╡ a313f1a5-a287-40d7-88e1-69ca2b650467
+md"""
+ $(x,y)$ = $(@bind state_x NumberField(1:10, default=8)) | $(@bind state_y NumberField(1:10, default=3))
+"""
+
+# ╔═╡ 49b55429-7f2f-4dbd-b260-ff62ab277fae
+sᵣ = State(state_x,state_y)
+
+# ╔═╡ 16747257-63be-4ffe-b672-7c34844233e8
+md"""## Using The Policy """
+
+# ╔═╡ e59b6053-a188-4943-9473-b67c6c0a0e91
+md"""## Value Iteration Policy """
+
+# ╔═╡ 0efa26a6-ee5b-4d65-9497-71801cab8fa3
+@bind vi_iterations Slider(0:30, default=10, show_value=true)
+
+# ╔═╡ 829e6ec0-1722-4444-a3f4-38445dee03d7
+vi_solver = ValueIterationSolver(max_iterations=vi_iterations);
+
+# ╔═╡ 0559f934-4840-4cfa-8a6b-32249fae6e5b
+@bind γ_vi Slider(0:0.05:1, default=0.95, show_value=true)
+
+# ╔═╡ ca5d43c5-aa04-4add-999b-a137a93bf7f6
+vi_mdp = QuickMDP(GridWorld,
+				 states 	= 𝒮,
+				 actions 	= 𝒜,
+				 transition = T,
+				 reward 	= R,
+				 discount 	= γ_vi,
+				 initialstate = 𝒮,
+				 isterminal = termination);
+
+# ╔═╡ cc5c17e9-733a-4e78-bde0-cf6e0b6de809
+vi_policy = solve(vi_solver, vi_mdp);
+
+# ╔═╡ 5f8273f2-3bba-4174-8ed9-4d210d9ed2bc
+md" ## Reinforcement Learning Solvers "
+
+# ╔═╡ 37ea7ff8-3790-4fb5-9de3-2613725a98f8
+html"""
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="369.699pt" height="185.742pt" viewBox="0 0 369.699 185.742" version="1.1">
+<defs>
+<g>
+<symbol overflow="visible" id="rl-glyph0-0">
+<path style="stroke:none;" d=""/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-1">
+<path style="stroke:none;" d="M 12.984375 -5.40625 L 12.375 -5.40625 C 11.859375 -2.1875 11.53125 -0.875 8.109375 -0.875 L 5.453125 -0.875 C 4.515625 -0.875 4.609375 -0.875 4.609375 -1.53125 L 4.609375 -6.734375 L 6.28125 -6.734375 C 8.203125 -6.734375 8.28125 -6.21875 8.28125 -4.40625 L 9.046875 -4.40625 L 9.046875 -9.9375 L 8.28125 -9.9375 C 8.28125 -8.09375 8.203125 -7.609375 6.28125 -7.609375 L 4.609375 -7.609375 L 4.609375 -12.25 C 4.609375 -12.90625 4.515625 -12.921875 5.453125 -12.921875 L 8.03125 -12.921875 C 11.078125 -12.921875 11.46875 -11.953125 11.796875 -9.0625 L 12.578125 -9.0625 L 12 -13.8125 L 0.515625 -13.8125 L 0.515625 -12.921875 L 1.140625 -12.921875 C 2.671875 -12.921875 2.5625 -12.828125 2.5625 -12.109375 L 2.5625 -1.671875 C 2.5625 -0.953125 2.671875 -0.875 1.140625 -0.875 L 0.515625 -0.875 L 0.515625 0 L 12.25 0 L 13.125 -5.40625 Z M 12.984375 -5.40625 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-2">
+<path style="stroke:none;" d="M 10.78125 -0.125 L 10.78125 -0.875 C 9.625 -0.875 9.25 -0.734375 9.21875 -1.328125 L 9.21875 -5.140625 C 9.21875 -6.859375 9.1875 -7.5625 8.5625 -8.28125 C 8.28125 -8.625 7.546875 -9.0625 6.390625 -9.0625 C 4.9375 -9.0625 3.859375 -8.0625 3.3125 -6.828125 L 3.5625 -6.828125 L 3.5625 -9.078125 L 0.5 -8.84375 L 0.5 -7.96875 C 2.03125 -7.96875 2.046875 -7.953125 2.046875 -6.96875 L 2.046875 -1.640625 C 2.046875 -0.734375 1.96875 -0.875 0.5 -0.875 L 0.5 0.015625 L 2.890625 -0.0625 L 5.234375 0.015625 L 5.234375 -0.875 C 3.78125 -0.875 3.6875 -0.734375 3.6875 -1.640625 L 3.6875 -5.296875 C 3.6875 -7.375 4.984375 -8.359375 6.25 -8.359375 C 7.515625 -8.359375 7.59375 -7.40625 7.59375 -6.28125 L 7.59375 -1.640625 C 7.59375 -0.734375 7.515625 -0.875 6.03125 -0.875 L 6.03125 0.015625 L 8.421875 -0.0625 L 10.78125 0.015625 Z M 10.78125 -0.125 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-3">
+<path style="stroke:none;" d="M 10.234375 -8.09375 L 10.234375 -8.859375 C 9.65625 -8.8125 9.078125 -8.78125 8.625 -8.78125 L 6.75 -8.84375 L 6.75 -7.96875 C 7.625 -7.953125 7.703125 -7.609375 7.703125 -7.234375 C 7.703125 -7.046875 7.671875 -6.96875 7.59375 -6.75 L 5.5625 -1.671875 L 5.8125 -1.671875 L 3.578125 -7.234375 C 3.46875 -7.484375 3.421875 -7.484375 3.421875 -7.484375 L 3.46875 -7.5625 C 3.46875 -8.09375 4.125 -7.96875 4.609375 -7.96875 L 4.609375 -8.84375 L 2.3125 -8.78125 C 1.765625 -8.78125 0.96875 -8.8125 0.234375 -8.859375 L 0.234375 -7.96875 C 1.640625 -7.96875 1.578125 -7.96875 1.828125 -7.34375 L 4.703125 -0.28125 C 4.828125 0 5 0.21875 5.265625 0.21875 C 5.515625 0.21875 5.71875 -0.078125 5.796875 -0.28125 L 8.40625 -6.75 C 8.59375 -7.21875 8.8125 -7.953125 10.234375 -7.96875 Z M 10.234375 -8.09375 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-4">
+<path style="stroke:none;" d="M 5.046875 -0.125 L 5.046875 -0.875 C 3.609375 -0.875 3.640625 -0.84375 3.640625 -1.609375 L 3.640625 -9.078125 L 0.59375 -8.84375 L 0.59375 -7.96875 C 2.03125 -7.96875 2.078125 -7.96875 2.078125 -7 L 2.078125 -1.640625 C 2.078125 -0.734375 1.984375 -0.875 0.515625 -0.875 L 0.515625 0.015625 L 2.84375 -0.0625 C 3.546875 -0.0625 4.25 -0.015625 5.046875 0.015625 Z M 3.9375 -12.15625 C 3.9375 -12.6875 3.359375 -13.34375 2.765625 -13.34375 C 2.09375 -13.34375 1.546875 -12.65625 1.546875 -12.15625 C 1.546875 -11.609375 2.15625 -10.984375 2.75 -10.984375 C 3.421875 -10.984375 3.9375 -11.65625 3.9375 -12.15625 Z M 3.9375 -12.15625 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-5">
+<path style="stroke:none;" d="M 7.375 -7.703125 C 7.375 -8.34375 6.640625 -9.0625 5.78125 -9.0625 C 4.328125 -9.0625 3.46875 -7.59375 3.1875 -6.734375 L 3.453125 -6.734375 L 3.453125 -9.078125 L 0.421875 -8.84375 L 0.421875 -7.96875 C 1.953125 -7.96875 1.96875 -7.953125 1.96875 -6.96875 L 1.96875 -1.640625 C 1.96875 -0.734375 1.890625 -0.875 0.421875 -0.875 L 0.421875 0.015625 L 2.828125 -0.0625 C 3.625 -0.0625 4.5625 -0.0625 5.484375 0.015625 L 5.484375 -0.875 L 4.9375 -0.875 C 3.46875 -0.875 3.546875 -0.953125 3.546875 -1.671875 L 3.546875 -4.734375 C 3.546875 -6.71875 4.265625 -8.359375 5.78125 -8.359375 C 5.921875 -8.359375 5.859375 -8.40625 5.890625 -8.390625 L 6 -8.609375 C 5.9375 -8.59375 5.40625 -8.203125 5.40625 -7.6875 C 5.40625 -7.125 5.953125 -6.71875 6.390625 -6.71875 C 6.75 -6.71875 7.375 -7.078125 7.375 -7.703125 Z M 7.375 -7.703125 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-6">
+<path style="stroke:none;" d="M 9.5 -4.375 C 9.5 -6.9375 7.390625 -9.1875 4.984375 -9.1875 C 2.484375 -9.1875 0.421875 -6.875 0.421875 -4.375 C 0.421875 -1.8125 2.625 0.21875 4.953125 0.21875 C 7.375 0.21875 9.5 -1.859375 9.5 -4.375 Z M 7.59375 -4.546875 C 7.59375 -3.828125 7.625 -2.84375 7.1875 -1.96875 L 7.15625 -1.875 C 6.71875 -0.96875 5.96875 -0.53125 4.984375 -0.53125 C 4.125 -0.53125 3.328125 -0.921875 2.78125 -1.828125 C 2.296875 -2.703125 2.328125 -3.828125 2.328125 -4.546875 C 2.328125 -5.3125 2.296875 -6.3125 2.765625 -7.1875 C 3.3125 -8.109375 4.15625 -8.484375 4.953125 -8.484375 C 5.84375 -8.484375 6.59375 -8.09375 7.109375 -7.234375 C 7.625 -6.375 7.59375 -5.296875 7.59375 -4.546875 Z M 7.59375 -4.546875 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-7">
+<path style="stroke:none;" d="M 16.3125 -0.125 L 16.3125 -0.875 C 15.15625 -0.875 14.78125 -0.734375 14.765625 -1.328125 L 14.765625 -5.140625 C 14.765625 -6.859375 14.71875 -7.5625 14.109375 -8.28125 C 13.828125 -8.625 13.09375 -9.0625 11.9375 -9.0625 C 10.265625 -9.0625 9.25 -7.734375 8.90625 -6.96875 L 9.15625 -6.96875 C 8.890625 -8.703125 7.296875 -9.0625 6.390625 -9.0625 C 4.9375 -9.0625 3.859375 -8.0625 3.3125 -6.828125 L 3.5625 -6.828125 L 3.5625 -9.078125 L 0.5 -8.84375 L 0.5 -7.96875 C 2.03125 -7.96875 2.046875 -7.953125 2.046875 -6.96875 L 2.046875 -1.640625 C 2.046875 -0.734375 1.96875 -0.875 0.5 -0.875 L 0.5 0.015625 L 2.890625 -0.0625 L 5.234375 0.015625 L 5.234375 -0.875 C 3.78125 -0.875 3.6875 -0.734375 3.6875 -1.640625 L 3.6875 -5.296875 C 3.6875 -7.375 4.984375 -8.359375 6.25 -8.359375 C 7.515625 -8.359375 7.59375 -7.40625 7.59375 -6.28125 L 7.59375 -1.640625 C 7.59375 -0.734375 7.515625 -0.875 6.03125 -0.875 L 6.03125 0.015625 L 8.421875 -0.0625 L 10.78125 0.015625 L 10.78125 -0.875 C 9.328125 -0.875 9.21875 -0.734375 9.21875 -1.640625 L 9.21875 -5.296875 C 9.21875 -7.375 10.515625 -8.359375 11.796875 -8.359375 C 13.046875 -8.359375 13.125 -7.40625 13.125 -6.28125 L 13.125 -1.640625 C 13.125 -0.734375 13.046875 -0.875 11.578125 -0.875 L 11.578125 0.015625 L 13.96875 -0.0625 L 16.3125 0.015625 Z M 16.3125 -0.125 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-8">
+<path style="stroke:none;" d="M 8.390625 -2.484375 C 8.390625 -2.6875 8.109375 -2.875 8.015625 -2.875 C 7.828125 -2.875 7.65625 -2.609375 7.609375 -2.453125 C 6.90625 -0.390625 5.265625 -0.53125 5.0625 -0.53125 C 4.0625 -0.53125 3.34375 -1.09375 2.890625 -1.828125 C 2.296875 -2.78125 2.328125 -4 2.328125 -4.609375 L 7.765625 -4.609375 C 8.203125 -4.609375 8.390625 -4.71875 8.390625 -5.140625 C 8.390625 -7.109375 7.1875 -9.1875 4.703125 -9.1875 C 2.390625 -9.1875 0.421875 -7 0.421875 -4.5 C 0.421875 -1.828125 2.65625 0.21875 4.9375 0.21875 C 7.375 0.21875 8.390625 -2.109375 8.390625 -2.484375 Z M 6.953125 -5.28125 L 2.375 -5.28125 C 2.46875 -8.109375 4.03125 -8.484375 4.703125 -8.484375 C 6.75 -8.484375 6.8125 -5.921875 6.8125 -5.28125 Z M 6.953125 -5.28125 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-9">
+<path style="stroke:none;" d="M 6.734375 -2.59375 L 6.734375 -3.859375 L 5.96875 -3.859375 L 5.96875 -2.625 C 5.96875 -1.15625 5.515625 -0.53125 4.78125 -0.53125 C 3.453125 -0.53125 3.5625 -2.21875 3.5625 -2.546875 L 3.5625 -7.96875 L 6.421875 -7.96875 L 6.421875 -8.84375 L 3.5625 -8.84375 L 3.5625 -12.515625 L 2.8125 -12.515625 C 2.78125 -10.734375 2.328125 -8.75 0.234375 -8.671875 L 0.234375 -7.96875 L 1.9375 -7.96875 L 1.9375 -2.59375 C 1.9375 -0.140625 3.921875 0.21875 4.640625 0.21875 C 6.0625 0.21875 6.734375 -1.3125 6.734375 -2.59375 Z M 6.734375 -2.59375 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-10">
+<path style="stroke:none;" d="M 14.40625 -0.125 L 14.40625 -0.875 L 13.921875 -0.875 C 12.734375 -0.875 12.578125 -0.875 12.34375 -1.53125 L 8.046875 -13.984375 C 7.953125 -14.25 7.796875 -14.515625 7.46875 -14.515625 C 7.15625 -14.515625 6.953125 -14.265625 6.859375 -13.984375 L 2.734375 -2.078125 C 2.375 -1.0625 1.71875 -0.890625 0.5 -0.875 L 0.5 0.015625 L 2.671875 -0.0625 L 5.078125 0.015625 L 5.078125 -0.875 C 3.96875 -0.875 3.578125 -1.234375 3.578125 -1.75 C 3.578125 -1.8125 3.5625 -1.9375 3.625 -2.015625 L 4.5 -4.546875 L 9.25 -4.546875 L 10.265625 -1.609375 C 10.28125 -1.53125 10.3125 -1.421875 10.3125 -1.328125 C 10.3125 -0.734375 9.34375 -0.875 8.671875 -0.875 L 8.671875 0.015625 C 9.515625 -0.0625 10.921875 -0.0625 11.671875 -0.0625 L 14.40625 0.015625 Z M 9.125 -5.421875 L 4.828125 -5.421875 L 7 -11.75 L 6.734375 -11.75 L 8.921875 -5.421875 Z M 9.125 -5.421875 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-11">
+<path style="stroke:none;" d="M 9.78125 -8.171875 C 9.78125 -8.5 9.421875 -9.28125 8.640625 -9.28125 C 8.25 -9.28125 7.265625 -9.125 6.515625 -8.390625 C 5.78125 -8.96875 4.859375 -9.0625 4.421875 -9.0625 C 2.5625 -9.0625 1.0625 -7.546875 1.0625 -6.015625 C 1.0625 -5.140625 1.53125 -4.296875 1.9375 -3.96875 C 1.765625 -3.765625 1.375 -3.015625 1.375 -2.3125 C 1.375 -1.6875 1.671875 -0.859375 2.078125 -0.59375 C 1.1875 -0.34375 0.421875 0.65625 0.421875 1.453125 C 0.421875 2.890625 2.53125 4.109375 4.953125 4.109375 C 7.3125 4.109375 9.5 2.96875 9.5 1.421875 C 9.5 0.71875 9.1875 -0.390625 8.171875 -0.953125 C 7.109375 -1.515625 5.875 -1.546875 4.65625 -1.546875 C 4.15625 -1.546875 3.3125 -1.546875 3.171875 -1.578125 C 2.53125 -1.65625 2.234375 -2.125 2.234375 -2.765625 C 2.234375 -2.84375 2.1875 -3.234375 2.46875 -3.53125 C 3.125 -3.0625 4.046875 -2.96875 4.421875 -2.96875 C 6.28125 -2.96875 7.765625 -4.46875 7.765625 -6 C 7.765625 -6.734375 7.40625 -7.5625 7.015625 -7.921875 C 7.625 -8.53125 8.265625 -8.59375 8.625 -8.59375 L 8.703125 -8.625 C 8.703125 -8.625 8.765625 -8.59375 8.828125 -8.5625 L 8.828125 -8.828125 C 8.609375 -8.75 8.359375 -8.390625 8.359375 -8.140625 C 8.359375 -7.8125 8.765625 -7.453125 9.078125 -7.453125 C 9.28125 -7.453125 9.78125 -7.703125 9.78125 -8.171875 Z M 6.015625 -6.015625 C 6.015625 -5.484375 6.03125 -4.9375 5.734375 -4.4375 C 5.578125 -4.203125 5.21875 -3.6875 4.421875 -3.6875 C 2.6875 -3.6875 2.8125 -5.53125 2.8125 -6 C 2.8125 -6.53125 2.78125 -7.09375 3.09375 -7.59375 C 3.25 -7.828125 3.625 -8.34375 4.421875 -8.34375 C 6.15625 -8.34375 6.015625 -6.46875 6.015625 -6.015625 Z M 8.203125 1.453125 C 8.203125 2.53125 6.9375 3.390625 4.984375 3.390625 C 2.96875 3.390625 1.71875 2.515625 1.71875 1.453125 C 1.71875 0.53125 2.34375 -0.078125 3.234375 -0.140625 L 4.40625 -0.140625 C 6.109375 -0.140625 8.203125 -0.265625 8.203125 1.453125 Z M 8.203125 1.453125 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-12">
+<path style="stroke:none;" d="M 14.484375 -6.875 C 14.484375 -10.9375 11.359375 -14.296875 7.734375 -14.296875 C 4.15625 -14.296875 0.96875 -10.984375 0.96875 -6.875 C 0.96875 -2.78125 4.1875 0.4375 7.734375 0.4375 C 11.359375 0.4375 14.484375 -2.84375 14.484375 -6.875 Z M 12.171875 -7.15625 C 12.171875 -1.875 9.578125 -0.34375 7.75 -0.34375 C 5.84375 -0.34375 3.28125 -1.953125 3.28125 -7.15625 C 3.28125 -12.3125 6.078125 -13.546875 7.734375 -13.546875 C 9.46875 -13.546875 12.171875 -12.25 12.171875 -7.15625 Z M 12.171875 -7.15625 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-13">
+<path style="stroke:none;" d="M 10.5 -4.421875 C 10.5 -6.953125 8.421875 -9.0625 6.15625 -9.0625 C 4.609375 -9.0625 3.640625 -8.09375 3.328125 -7.734375 L 3.546875 -7.625 L 3.546875 -14.109375 L 0.421875 -13.859375 L 0.421875 -12.984375 C 1.953125 -12.984375 1.96875 -12.96875 1.96875 -12 L 1.96875 0 L 2.671875 0 L 3.328125 -1.109375 C 3.53125 -0.8125 4.46875 0.21875 5.9375 0.21875 C 8.3125 0.21875 10.5 -1.859375 10.5 -4.421875 Z M 8.59375 -4.4375 C 8.59375 -3.703125 8.59375 -2.609375 8.015625 -1.71875 C 7.59375 -1.09375 6.9375 -0.484375 5.859375 -0.484375 C 4.953125 -0.484375 4.328125 -0.921875 3.84375 -1.65625 C 3.5625 -2.078125 3.609375 -2.03125 3.609375 -2.390625 L 3.609375 -6.5 C 3.609375 -6.875 3.5625 -6.8125 3.78125 -7.125 C 4.5625 -8.25 5.578125 -8.359375 6.0625 -8.359375 C 6.953125 -8.359375 7.5625 -7.890625 8.046875 -7.125 C 8.5625 -6.3125 8.59375 -5.265625 8.59375 -4.4375 Z M 8.59375 -4.4375 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-14">
+<path style="stroke:none;" d="M 7.296875 -2.671875 C 7.296875 -3.71875 6.65625 -4.421875 6.421875 -4.65625 C 5.75 -5.296875 4.90625 -5.5 4.0625 -5.65625 C 2.953125 -5.875 1.734375 -6 1.734375 -7.15625 C 1.734375 -7.84375 2.125 -8.546875 3.84375 -8.546875 C 6.03125 -8.546875 6 -6.875 6.03125 -6.25 C 6.0625 -6.078125 6.5 -6 6.5 -6 L 6.421875 -5.953125 C 6.671875 -5.953125 6.796875 -6.171875 6.796875 -6.546875 L 6.796875 -8.5625 C 6.796875 -8.90625 6.671875 -9.1875 6.453125 -9.1875 C 6.359375 -9.1875 6.21875 -9.140625 5.953125 -8.90625 C 5.890625 -8.828125 5.703125 -8.640625 5.703125 -8.671875 C 5.046875 -9.140625 4.140625 -9.1875 3.84375 -9.1875 C 1.421875 -9.1875 0.515625 -7.703125 0.515625 -6.59375 C 0.515625 -5.890625 0.875 -5.265625 1.421875 -4.828125 C 2.046875 -4.296875 2.703125 -4.140625 4.140625 -3.859375 C 4.578125 -3.78125 6.078125 -3.578125 6.078125 -2.15625 C 6.078125 -1.140625 5.515625 -0.484375 3.96875 -0.484375 C 2.296875 -0.484375 1.6875 -1.46875 1.3125 -3.171875 C 1.25 -3.421875 1.109375 -3.640625 0.921875 -3.640625 C 0.65625 -3.640625 0.515625 -3.359375 0.515625 -3.015625 L 0.515625 -0.375 C 0.515625 -0.046875 0.65625 0.21875 0.875 0.21875 C 0.96875 0.21875 1.078125 0.15625 1.453125 -0.21875 C 1.5 -0.265625 1.5 -0.296875 1.765625 -0.578125 C 2.546875 0.15625 3.546875 0.21875 3.96875 0.21875 C 6.25 0.21875 7.296875 -1.234375 7.296875 -2.671875 Z M 7.296875 -2.671875 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-15">
+<path style="stroke:none;" d="M 9.734375 -1.890625 L 9.734375 -3.140625 L 8.984375 -3.140625 L 8.984375 -1.890625 C 8.984375 -0.734375 8.625 -0.75 8.40625 -0.75 C 7.75 -0.75 7.796875 -1.515625 7.796875 -1.609375 L 7.796875 -5.59375 C 7.796875 -6.4375 7.75 -7.3125 7.03125 -8.046875 C 6.25 -8.828125 5.171875 -9.1875 4.21875 -9.1875 C 2.59375 -9.1875 1.078125 -8.109375 1.078125 -6.796875 C 1.078125 -6.203125 1.609375 -5.734375 2.125 -5.734375 C 2.6875 -5.734375 3.171875 -6.25 3.171875 -6.765625 C 3.171875 -7.015625 2.953125 -7.8125 2.296875 -7.828125 C 2.65625 -8.3125 3.546875 -8.484375 4.1875 -8.484375 C 5.15625 -8.484375 6.15625 -7.828125 6.15625 -6.0625 L 6.15625 -5.453125 C 5.28125 -5.40625 3.890625 -5.34375 2.625 -4.734375 C 1.140625 -4.0625 0.5 -2.890625 0.5 -2.015625 C 0.5 -0.390625 2.5625 0.21875 3.828125 0.21875 C 5.140625 0.21875 6.171875 -0.703125 6.546875 -1.640625 L 6.296875 -1.640625 C 6.375 -0.84375 7.046875 0.125 7.984375 0.125 C 8.40625 0.125 9.734375 -0.28125 9.734375 -1.890625 Z M 6.15625 -2.90625 C 6.15625 -1.015625 4.859375 -0.484375 3.96875 -0.484375 C 2.984375 -0.484375 2.296875 -1.03125 2.296875 -2.03125 C 2.296875 -3.125 3.015625 -4.65625 6.15625 -4.765625 Z M 6.15625 -2.90625 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-16">
+<path style="stroke:none;" d="M 6.71875 4.65625 C 6.71875 4.609375 6.671875 4.46875 6.328125 4.125 C 3.84375 1.609375 3.25 -2.046875 3.25 -5.09375 C 3.25 -8.5625 3.96875 -11.953125 6.421875 -14.4375 C 6.671875 -14.6875 6.71875 -14.796875 6.71875 -14.859375 C 6.71875 -15 6.515625 -15.203125 6.390625 -15.203125 C 6.203125 -15.203125 4.265625 -13.703125 3.09375 -11.171875 C 2.078125 -8.984375 1.828125 -6.765625 1.828125 -5.09375 C 1.828125 -3.546875 2.046875 -1.140625 3.140625 1.109375 C 4.34375 3.5625 6.203125 4.984375 6.390625 4.984375 C 6.515625 4.984375 6.71875 4.796875 6.71875 4.65625 Z M 6.71875 4.65625 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-17">
+<path style="stroke:none;" d="M 5.875 -5.09375 C 5.875 -6.65625 5.65625 -9.0625 4.5625 -11.3125 C 3.359375 -13.765625 1.53125 -15.203125 1.328125 -15.203125 C 1.21875 -15.203125 1 -14.984375 1 -14.859375 C 1 -14.796875 1.03125 -14.6875 1.421875 -14.328125 C 3.359375 -12.34375 4.46875 -9.265625 4.46875 -5.09375 C 4.46875 -1.6875 3.765625 1.71875 1.296875 4.21875 C 1.03125 4.46875 1 4.609375 1 4.65625 C 1 4.78125 1.21875 4.984375 1.328125 4.984375 C 1.53125 4.984375 3.453125 3.5 4.625 0.96875 C 5.640625 -1.21875 5.875 -3.421875 5.875 -5.09375 Z M 5.875 -5.09375 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph0-18">
+<path style="stroke:none;" d="M 8.390625 -2.484375 C 8.390625 -2.6875 8.0625 -2.828125 8.015625 -2.828125 C 7.828125 -2.828125 7.65625 -2.609375 7.609375 -2.484375 C 7.03125 -0.640625 5.875 -0.53125 5.140625 -0.53125 C 4.078125 -0.53125 2.453125 -1.25 2.453125 -4.46875 C 2.453125 -7.703125 3.96875 -8.421875 5.015625 -8.421875 C 5.203125 -8.421875 6.359375 -8.453125 6.828125 -7.921875 C 6.328125 -7.890625 6.078125 -7.15625 6.078125 -6.890625 C 6.078125 -6.375 6.578125 -5.859375 7.125 -5.859375 C 7.65625 -5.859375 8.171875 -6.3125 8.171875 -6.90625 C 8.171875 -8.265625 6.53125 -9.1875 5 -9.1875 C 2.515625 -9.1875 0.53125 -6.890625 0.53125 -4.421875 C 0.53125 -1.875 2.65625 0.21875 4.953125 0.21875 C 7.625 0.21875 8.390625 -2.296875 8.390625 -2.484375 Z M 8.390625 -2.484375 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph1-0">
+<path style="stroke:none;" d=""/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph1-1">
+<path style="stroke:none;" d="M 9.34375 -5.4375 C 9.34375 -7.515625 7.953125 -8.8125 6.15625 -8.8125 C 3.484375 -8.8125 0.8125 -5.96875 0.8125 -3.140625 C 0.8125 -1.171875 2.15625 0.21875 4 0.21875 C 6.65625 0.21875 9.34375 -2.53125 9.34375 -5.4375 Z M 4.03125 -0.21875 C 3.171875 -0.21875 2.296875 -0.84375 2.296875 -2.390625 C 2.296875 -3.359375 2.8125 -5.515625 3.453125 -6.53125 C 4.4375 -8.0625 5.578125 -8.359375 6.140625 -8.359375 C 7.296875 -8.359375 7.890625 -7.40625 7.890625 -6.21875 C 7.890625 -5.4375 7.484375 -3.34375 6.734375 -2.046875 C 6.03125 -0.890625 4.9375 -0.21875 4.03125 -0.21875 Z M 4.03125 -0.21875 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph1-2">
+<path style="stroke:none;" d="M 7.4375 -7.53125 C 7.078125 -8.265625 6.5 -8.8125 5.59375 -8.8125 C 3.265625 -8.8125 0.796875 -5.875 0.796875 -2.96875 C 0.796875 -1.09375 1.890625 0.21875 3.453125 0.21875 C 3.84375 0.21875 4.84375 0.140625 6.03125 -1.28125 C 6.203125 -0.4375 6.890625 0.21875 7.84375 0.21875 C 8.546875 0.21875 9 -0.234375 9.328125 -0.875 C 9.65625 -1.59375 9.921875 -2.8125 9.921875 -2.84375 C 9.921875 -3.046875 9.734375 -3.046875 9.6875 -3.046875 C 9.484375 -3.046875 9.46875 -2.96875 9.40625 -2.6875 C 9.0625 -1.390625 8.703125 -0.21875 7.890625 -0.21875 C 7.34375 -0.21875 7.296875 -0.734375 7.296875 -1.140625 C 7.296875 -1.578125 7.328125 -1.734375 7.546875 -2.609375 C 7.765625 -3.453125 7.8125 -3.640625 7.984375 -4.40625 L 8.703125 -7.1875 C 8.84375 -7.75 8.84375 -7.796875 8.84375 -7.875 C 8.84375 -8.203125 8.609375 -8.40625 8.265625 -8.40625 C 7.796875 -8.40625 7.484375 -7.96875 7.4375 -7.53125 Z M 6.140625 -2.375 C 6.03125 -2.015625 6.03125 -1.96875 5.734375 -1.640625 C 4.859375 -0.53125 4.046875 -0.21875 3.484375 -0.21875 C 2.484375 -0.21875 2.21875 -1.3125 2.21875 -2.09375 C 2.21875 -3.09375 2.84375 -5.53125 3.3125 -6.453125 C 3.921875 -7.625 4.828125 -8.359375 5.625 -8.359375 C 6.90625 -8.359375 7.1875 -6.734375 7.1875 -6.609375 C 7.1875 -6.5 7.15625 -6.375 7.125 -6.28125 Z M 6.140625 -2.375 "/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph2-0">
+<path style="stroke:none;" d=""/>
+</symbol>
+<symbol overflow="visible" id="rl-glyph2-1">
+<path style="stroke:none;" d="M 3.4375 -5.515625 L 4.859375 -5.515625 C 5.125 -5.515625 5.296875 -5.515625 5.296875 -5.8125 C 5.296875 -6.015625 5.125 -6.015625 4.890625 -6.015625 L 3.5625 -6.015625 L 4.078125 -8.078125 C 4.09375 -8.15625 4.109375 -8.21875 4.109375 -8.28125 C 4.109375 -8.53125 3.921875 -8.71875 3.640625 -8.71875 C 3.296875 -8.71875 3.078125 -8.484375 2.984375 -8.125 C 2.890625 -7.765625 3.0625 -8.4375 2.453125 -6.015625 L 1.03125 -6.015625 C 0.765625 -6.015625 0.59375 -6.015625 0.59375 -5.703125 C 0.59375 -5.515625 0.75 -5.515625 1 -5.515625 L 2.328125 -5.515625 L 1.5 -2.21875 C 1.421875 -1.875 1.296875 -1.375 1.296875 -1.1875 C 1.296875 -0.359375 2 0.140625 2.796875 0.140625 C 4.34375 0.140625 5.21875 -1.8125 5.21875 -2 C 5.21875 -2.171875 5.03125 -2.171875 5 -2.171875 C 4.828125 -2.171875 4.8125 -2.15625 4.703125 -1.90625 C 4.3125 -1.03125 3.59375 -0.25 2.828125 -0.25 C 2.546875 -0.25 2.34375 -0.4375 2.34375 -0.9375 C 2.34375 -1.078125 2.40625 -1.375 2.421875 -1.5 Z M 3.4375 -5.515625 "/>
+</symbol>
+</g>
+<clipPath id="rl-clip1">
+  <path d="M 193 58 L 369.699219 58 L 369.699219 127 L 193 127 Z M 193 58 "/>
+</clipPath>
+</defs>
+<g id="rl-surface1">
+<path style="fill:none;stroke-width:0.3985;stroke-linecap:butt;stroke-linejoin:miter;stroke:rgb(0%,0%,0%);stroke-opacity:1;stroke-miterlimit:10;" d="M 81.053969 28.347562 L -81.055406 28.347562 C -83.254625 28.347562 -85.039781 26.562406 -85.039781 24.363187 L -85.039781 -24.363375 C -85.039781 -26.562594 -83.254625 -28.34775 -81.055406 -28.34775 L 81.053969 -28.34775 C 83.257094 -28.34775 85.04225 -26.562594 85.04225 -24.363375 L 85.04225 24.363187 C 85.04225 26.562406 83.257094 28.347562 81.053969 28.347562 Z M 81.053969 28.347562 " transform="matrix(1,0,0,-1,85.239,92.871)"/>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-1" x="28.88" y="99.536"/>
+  <use xlink:href="#rl-glyph0-2" x="42.449116" y="99.536"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-3" x="52.969664" y="99.536"/>
+  <use xlink:href="#rl-glyph0-4" x="63.490211" y="99.536"/>
+  <use xlink:href="#rl-glyph0-5" x="69.029439" y="99.536"/>
+  <use xlink:href="#rl-glyph0-6" x="76.840149" y="99.536"/>
+  <use xlink:href="#rl-glyph0-2" x="86.802789" y="99.536"/>
+  <use xlink:href="#rl-glyph0-7" x="97.881245" y="99.536"/>
+  <use xlink:href="#rl-glyph0-8" x="114.479003" y="99.536"/>
+  <use xlink:href="#rl-glyph0-2" x="123.325827" y="99.536"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-9" x="133.846375" y="99.536"/>
+</g>
+<g clip-path="url(#rl-clip1)" clip-rule="nonzero">
+<path style="fill:none;stroke-width:0.3985;stroke-linecap:butt;stroke-linejoin:miter;stroke:rgb(0%,0%,0%);stroke-opacity:1;stroke-miterlimit:10;" d="M 280.280531 28.347562 L 118.171156 28.347562 C 115.968031 28.347562 114.182875 26.562406 114.182875 24.363187 L 114.182875 -24.363375 C 114.182875 -26.562594 115.968031 -28.34775 118.171156 -28.34775 L 280.280531 -28.34775 C 282.47975 -28.34775 284.264906 -26.562594 284.264906 -24.363375 L 284.264906 24.363187 C 284.264906 26.562406 282.47975 28.347562 280.280531 28.347562 Z M 280.280531 28.347562 " transform="matrix(1,0,0,-1,85.239,92.871)"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-10" x="258.448" y="97.952"/>
+  <use xlink:href="#rl-glyph0-11" x="273.39196" y="97.952"/>
+  <use xlink:href="#rl-glyph0-8" x="283.3546" y="97.952"/>
+  <use xlink:href="#rl-glyph0-2" x="292.201424" y="97.952"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-9" x="302.721972" y="97.952"/>
+</g>
+<path style="fill:none;stroke-width:1.59404;stroke-linecap:butt;stroke-linejoin:miter;stroke:rgb(0%,0%,0%);stroke-opacity:1;stroke-miterlimit:10;" d="M 28.714125 28.746 C 67.815687 67.843656 131.409438 67.843656 165.690688 33.562406 " transform="matrix(1,0,0,-1,85.239,92.871)"/>
+<path style=" stroke:none;fill-rule:nonzero;fill:rgb(0%,0%,0%);fill-opacity:1;" d="M 255.75 64.125 C 254.589844 62.429688 253.070313 59.308594 252.402344 56.765625 L 248.386719 60.78125 C 250.929688 61.449219 254.050781 62.964844 255.75 64.125 "/>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-12" x="113.051" y="21.585"/>
+  <use xlink:href="#rl-glyph0-13" x="128.552868" y="21.585"/>
+  <use xlink:href="#rl-glyph0-14" x="139.631324" y="21.585"/>
+  <use xlink:href="#rl-glyph0-8" x="147.481884" y="21.585"/>
+  <use xlink:href="#rl-glyph0-5" x="156.328708" y="21.585"/>
+  <use xlink:href="#rl-glyph0-3" x="164.139418" y="21.585"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-15" x="173.54415" y="21.585"/>
+  <use xlink:href="#rl-glyph0-9" x="183.50679" y="21.585"/>
+  <use xlink:href="#rl-glyph0-4" x="191.257724" y="21.585"/>
+  <use xlink:href="#rl-glyph0-6" x="196.796952" y="21.585"/>
+  <use xlink:href="#rl-glyph0-2" x="206.759592" y="21.585"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-16" x="224.473166" y="21.585"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph1-1" x="232.223" y="21.585"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph2-1" x="241.881" y="24.575"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-17" x="248.897" y="21.585"/>
+</g>
+<path style="fill:none;stroke-width:1.59404;stroke-linecap:butt;stroke-linejoin:miter;stroke:rgb(0%,0%,0%);stroke-opacity:1;stroke-miterlimit:10;" d="M 170.511 -28.746188 C 131.409438 -67.843844 67.815687 -67.843844 33.534437 -33.562594 " transform="matrix(1,0,0,-1,85.239,92.871)"/>
+<path style=" stroke:none;fill-rule:nonzero;fill:rgb(0%,0%,0%);fill-opacity:1;" d="M 113.953125 121.617188 C 115.113281 123.3125 116.632813 126.433594 117.300781 128.976563 L 121.316406 124.960938 C 118.773438 124.292969 115.648438 122.777344 113.953125 121.617188 "/>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-10" x="136.225" y="174.12"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-18" x="150.611052" y="174.12"/>
+  <use xlink:href="#rl-glyph0-9" x="159.457876" y="174.12"/>
+  <use xlink:href="#rl-glyph0-4" x="167.20881" y="174.12"/>
+  <use xlink:href="#rl-glyph0-6" x="172.748038" y="174.12"/>
+  <use xlink:href="#rl-glyph0-2" x="182.710678" y="174.12"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-16" x="200.424252" y="174.12"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph1-2" x="208.175" y="174.12"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph2-1" x="218.707" y="177.108"/>
+</g>
+<g style="fill:rgb(0%,0%,0%);fill-opacity:1;">
+  <use xlink:href="#rl-glyph0-17" x="225.723" y="174.12"/>
+</g>
+</g>
+</svg>
+"""
+
+# ╔═╡ 7759a826-76df-4e94-b0ad-f05bca544884
+md" ### Temporal Difference Learning"
+
+# ╔═╡ 6e4e0720-8002-41b2-8813-b4e945e5110a
+md" ### Q-Learning"
+
+# ╔═╡ 99eff301-6e9d-4275-af41-26b6cac2d18e
+md"#### Q-Learning Solver"
+
+# ╔═╡ 43c4aca2-a6b1-4975-a912-f73e9b6faafe
+md"#### Q-Learning Policy"
+
+# ╔═╡ a5316727-e467-425e-a933-c9cb05f58263
+@bind n_episodes_q Slider(1:500, default=500)
+
+# ╔═╡ 4484bfa9-1c38-45ea-b112-c4e523042489
+@bind γ_q Slider(0:0.05:1, default=0.95, show_value=true)
+
+# ╔═╡ 2da97e74-ec36-4f35-8d43-c151e4198936
+q_mdp = QuickMDP(GridWorld,
+				states 		= 𝒮,
+				actions 	= 𝒜,
+				transition  = T,
+				reward 		= R,
+				discount 	= γ_q,
+				initialstate= 𝒮,
+				isterminal 	= termination);
+
+# ╔═╡ baaf7c7e-5fb2-473e-9490-cfc7f615512a
+q_learning_solver = QLearningSolver(n_episodes=n_episodes_q,
+									learning_rate=0.8,
+									exploration_policy=EpsGreedyPolicy(q_mdp,0.5),
+									verbose=false);
+
+# ╔═╡ c1b7953e-c84a-417f-b6b6-0cc2ec9a263c
+q_learning_policy = solve(q_learning_solver, q_mdp);
+
+# ╔═╡ 773cf1ad-f1e5-4047-a55b-4dce38c7ee59
+md" ## SARSA"
+
+# ╔═╡ fc6dea07-cb3d-423c-a919-5300282d6f74
+md"### SARSA Solver"
+
+# ╔═╡ 17ad6083-cbcc-4d67-b86e-c4a8e41eccb3
+md"### SARSA Policy"
+
+# ╔═╡ 88d50f18-8e2a-4c57-aac4-fc5d6fba9eac
+@bind n_episodes_sarsa Slider(0:10:1000,default=500)
+
+# ╔═╡ 28c9cfea-363d-4b19-9dc8-a09674c1737c
+@bind γ_sarsa Slider(0:0.05:1,default=0.95,show_value=true)
+
+# ╔═╡ e8a305a2-238b-4bab-9ec1-4e38032d16e2
+sarsa_mdp = QuickMDP(GridWorld,
+	states 		= 𝒮,
+	actions 	= 𝒜,
+	transition 	= T,
+	reward 		= R,
+	discount 	= γ_sarsa,
+	initialstate= 𝒮,
+	isterminal 	= termination);
+
+# ╔═╡ e50a0e37-14aa-4f51-8298-852c10495764
+sarsa_solver = SARSASolver(n_episodes=n_episodes_sarsa,
+						  learning_rate=0.8,
+						  exploration_policy=EpsGreedyPolicy(sarsa_mdp, 0.5),
+						  verbose=false);
+
+# ╔═╡ 04966c57-3b8b-48b3-9e8c-df21e4bbbac4
+sarsa_policy = solve(sarsa_solver, sarsa_mdp);
+
+# ╔═╡ 7738f6c3-10d2-42a2-bddc-ea136044f55d
+md"## Online Solvers "
+
+# ╔═╡ cd0eace1-009e-46fe-b07c-1436d5f4248d
+md"## Monte Carlo Tree Search "
+
+# ╔═╡ 2a07c8e9-8723-41db-a164-b22e06749364
+mcts_solver = MCTSSolver(n_iterations=50,
+						depth=20,
+						exploration_constant=5.0,
+						enable_tree_vis=true);
+
+# ╔═╡ 1dca1b60-638a-4c94-9f44-103de9fbbb97
+s₀ = State(8,2)
+
+# ╔═╡ 378b5ba5-f598-4706-b7a0-077100b649e3
+@bind γ_mcts Slider(0:0.05:1, default=0.95, show_value=true)
+
+# ╔═╡ 68bbf33b-c023-47e2-91e3-5537fe23bf9d
+mcts_mdp = QuickMDP(GridWorld,
+				   states 		= 𝒮,
+				   actions 		= 𝒜,
+				   transition 	= T,
+				   reward 		= R,
+				   discount 	= γ_mcts,
+				   initialstate = 𝒮,
+				   isterminal 	= termination);
+
+# ╔═╡ b0bb4eb8-fe42-457e-bbdb-ad608a8770d7
+mcts_planner = solve(mcts_solver, mcts_mdp);
+
+# ╔═╡ d28c1e76-a669-4b44-9b83-77d9dc1830f3
+aₘ, info = action_info(mcts_planner,s₀);
+
+# ╔═╡ 8bcce8d6-a1ab-41f9-8926-2d54688f9f18
+tree = D3Tree(info[:tree], s₀, init_expand=1)
+
+# ╔═╡ db1c1077-494d-4b2a-8e23-c228a5dfddf9
+MCTS.node_tag(s::State) = "($(s.x), $(s.y))\n r= $(reward(mcts_mdp, s))"
+
+# ╔═╡ e91d2756-31aa-4e7a-8509-2ca1c4465b14
+md"""
+# Customization"""
+
+# ╔═╡ 10830f2e-8ae3-41ab-b457-56785d8ac1ab
+cmap = ColorScheme([Colors.RGB(180/255, 0.0, 0.0), Colors.RGB(1, 1, 1), Colors.RGB(0.0, 100/255, 0.0)], "custom", "threetone, red, white, and green")
+
+# ╔═╡ 9d8e0ba7-1305-4698-bef3-dbe9aecf1c42
+# plot the U values (maximum Q over the actions)
+# x = row, y = column, z = U-value
+function plot_grid_world(mdp::MDP,
+        policy::Policy=NothingPolicy(),
+        iter=0,
+        discount=NaN;
+        outline=true,
+        show_policy=true,
+        extra_title=isnan(discount) ? "" : " (iter=$iter, γ=$discount)",
+        show_rewards=false,
+        outline_state::Union{State, Nothing}=nothing)
+    
+    gr()
+	
+    if policy isa NothingPolicy
+        # override when the policy is empty
+        show_policy = false
+    end
+    
+    if iter == 0
+        # solver has not been run yet, so we just plot the raw rewards
+        # overwrite policy at time=0 to be emp
+        U = get_rewards(mdp, policy)
+    else
+        # otherwise, use the Value Function to get the values (i.e., utility)
+        U = values(mdp, policy)
+    end
+
+    # reshape to grid
+    (xmax, ymax) = params.size
+    Uxy = reshape(U, xmax, ymax)
+
+
+    # plot values (i.e the U matrix)
+    fig = heatmap(Uxy',
+                  legend=:none,
+                  aspect_ratio=:equal,
+                  framestyle=:box,
+                  tickdirection=:out,
+                  color=cmap.colors)
+    xlims!(0.5, xmax+0.5)
+    ylims!(0.5, ymax+0.5)
+    xticks!(1:xmax)
+    yticks!(1:ymax)
+
+    rectangle(w, h, x, y) = Shape(x .+ [0,w,w,0], y .+ [0,0,h,h])
+    
+    if show_rewards
+        for s in filter(s->reward(mdp, s) != 0, states(mdp))
+            r = reward(mdp, s)
+            annotate!([(s.x, s.y, (r, :white, :center, 12, "Computer Modern"))])
+        end
+    end
+    
+    for x in 1:xmax, y in 1:ymax
+        # display policy on the plot as arrows
+        if show_policy
+            grid = policy_grid(policy, xmax, ymax)
+            annotate!([(x, y, (grid[x,y], :center, 12, "Computer Modern"))])
+        end
+        if outline
+            rect = rectangle(1, 1, x - 0.5, y - 0.5)
+            plot!(rect, fillalpha=0, linecolor=:gray)
+        end
+    end
+
+    if !isnothing(outline_state)
+        terminal_states = filter(s->reward(mdp, s) != 0, states(mdp))
+        color = (outline_state in terminal_states) ? "yellow" : "blue"
+        rect = rectangle(1, 1, outline_state.x - 0.5, outline_state.y - 0.5)
+        plot!(rect, fillalpha=0, linecolor=color)
+    end
+
+    title!("Grid World Policy Plot$extra_title")
+
+    return fig
+end
+
+# ╔═╡ 8dc09b62-f2f0-4213-b4f5-a25dd10b5143
+render = plot_grid_world
+
+# ╔═╡ d54a53a7-9a83-4006-b4ce-ff025c2ae694
+mdp = QuickMDP(GridWorld,
+    states       = 𝒮,
+    actions      = 𝒜,
+    transition   = T,
+    reward       = R,
+    discount     = γ,
+    initialstate = 𝒮,
+    isterminal   = termination,
+	render       = render);
+
+# ╔═╡ 7acd6924-a53b-4c0d-bdc1-85d5436a70f9
+render(mdp)
+
+# ╔═╡ e489c6c2-35cf-4b39-ac11-69ac9218205e
+render(mdp, show_rewards=true)
+
+# ╔═╡ 3dff82ea-0d48-4e43-a34d-b3d5623afc16
+policy = solve(solver, mdp)
+
+# ╔═╡ 934d6fcf-5c02-46e9-b8d7-7e3d1c1ec9ea
+render(mdp,policy,30,γ; outline=false)
+
+# ╔═╡ 66f38a0d-9a47-4926-ae6a-b02232004dd7
+aᵣ = action(policy, sᵣ)
+
+# ╔═╡ 352ed7de-9ec7-48cb-a297-f2fb2a8f4aa1
+value(policy,sᵣ)
+
+# ╔═╡ f9342588-c729-4df1-b6de-f3937d94ab04
+distr = transition(mdp, sᵣ, aᵣ)
+
+# ╔═╡ 1d8ddce8-6d45-4d62-af2f-0831e52b384e
+# ╠═╡ show_logs = false
+begin
+	grid_plot = render(mdp, policy, 30; outline=false, outline_state=sᵣ)
+	distr_plot = plot_transition_probability(distr)
+	plot(grid_plot, distr_plot, layout=2)
+end
+
+# ╔═╡ ec3a8618-4246-480e-a034-074d07f92251
+viz =render(vi_mdp, vi_policy, vi_iterations, γ_vi)
+
+# ╔═╡ 6c925a2b-f609-4d5f-8f70-367d94f8e7c9
+render(mdp,q_learning_policy,n_episodes_q, γ)
+
+# ╔═╡ 29a30360-97ed-4166-b18e-d74832887b92
+render(mdp, sarsa_policy, n_episodes_sarsa, γ)
+
+# ╔═╡ ae1c01f9-5e31-4f8d-9160-252421c3c184
+ColorScheme([get(cmap, i) for i in 0.0:0.001:1.0])
+
+# ╔═╡ e3f6801f-dd64-4fcf-b262-27b25f665d1c
+TableOfContents(title="HandsOn MDP", depth=4)
+
+# ╔═╡ 00000000-0000-0000-0000-000000000001
+PLUTO_PROJECT_TOML_CONTENTS = """
+[deps]
+ColorSchemes = "35d6a980-a343-548e-a6ea-1d62b119f2f4"
+Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
+D3Trees = "e3df1716-f71e-5df9-9e2d-98e193103c45"
+DiscreteValueIteration = "4b033969-44f6-5439-a48b-c11fa3648068"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+MCTS = "e12ccd36-dcad-5f33-8774-9175229e7b33"
+POMDPModelTools = "08074719-1b2a-587c-a292-00f91cc44415"
+POMDPPolicies = "182e52fb-cfd0-5e46-8c26-fd0667c990f4"
+POMDPs = "a93abf59-7444-517b-a68a-c42f96afdd7d"
+Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
+QuickPOMDPs = "8af83fb2-a731-493c-9049-9e19dbce6165"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+TabularTDLearning = "df77095f-98f0-51e5-a706-d0ff5a5ad33f"
+
+[compat]
+ColorSchemes = "~3.31.0"
+Colors = "~0.13.1"
+D3Trees = "~0.3.2"
+DiscreteValueIteration = "~0.4.8"
+JSON = "~0.21.4"
+MCTS = "~0.5.7"
+POMDPModelTools = "~0.3.13"
+POMDPPolicies = "~0.4.3"
+POMDPs = "~0.9.6"
+Parameters = "~0.12.3"
+Plots = "1.20.0"
+PlutoUI = "~0.7.83"
+QuickPOMDPs = "~0.2.15"
+TabularTDLearning = "~0.4.5"
+"""
+
+# ╔═╡ 00000000-0000-0000-0000-000000000002
+PLUTO_MANIFEST_TOML_CONTENTS = """
+# This file is machine-generated - editing it directly is not advised
+
+julia_version = "1.10.11"
+manifest_format = "2.0"
+project_hash = "562eaaa4caeb46e8d866b0391c5b5dedde025437"
+
+[[deps.AbstractPlutoDingetjes]]
+git-tree-sha1 = "6c3913f4e9bdf6ba3c08041a446fb1332716cbc2"
+uuid = "6e696c72-6542-2067-7265-42206c756150"
+version = "1.4.0"
+
+[[deps.AbstractTrees]]
+git-tree-sha1 = "03e0550477d86222521d254b741d470ba17ea0b5"
+uuid = "1520ce14-60c1-5f80-bbc7-55ef81b5835c"
+version = "0.3.4"
+
+[[deps.Accessors]]
+deps = ["CompositionsBase", "ConstructionBase", "Dates", "InverseFunctions", "MacroTools"]
+git-tree-sha1 = "7063ad1083578215c7c4bf410368150abe8d5524"
+uuid = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
+version = "0.1.45"
+
+    [deps.Accessors.extensions]
+    AxisKeysExt = "AxisKeys"
+    IntervalSetsExt = "IntervalSets"
+    LinearAlgebraExt = "LinearAlgebra"
+    StaticArraysExt = "StaticArrays"
+    StructArraysExt = "StructArrays"
+    TestExt = "Test"
+    UnitfulExt = "Unitful"
+
+    [deps.Accessors.weakdeps]
+    AxisKeys = "94b1ba4f-4ee9-5380-92f1-94cde586c3c5"
+    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
+    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+    StructArrays = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+    Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[[deps.AliasTables]]
+deps = ["PtrArrays", "Random"]
+git-tree-sha1 = "9876e1e164b144ca45e9e3198d0b689cadfed9ff"
+uuid = "66dad0bd-aa9a-41b7-9441-69ab47430ed8"
+version = "1.1.3"
+
+[[deps.ArgTools]]
+uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
+version = "1.1.1"
+
+[[deps.ArnoldiMethod]]
+deps = ["LinearAlgebra", "Random", "StaticArrays"]
+git-tree-sha1 = "d57bd3762d308bded22c3b82d033bff85f6195c6"
+uuid = "ec485272-7323-5ecc-a04f-4719b315124d"
+version = "0.4.0"
+
+[[deps.Artifacts]]
+uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
+
+[[deps.Base64]]
+uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
+
+[[deps.Bzip2_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
+uuid = "6e34b625-4abd-537c-b88f-471c36dfa7a0"
+version = "1.0.9+0"
+
+[[deps.Cairo_jll]]
+deps = ["Artifacts", "Bzip2_jll", "CompilerSupportLibraries_jll", "Fontconfig_jll", "FreeType2_jll", "Glib_jll", "JLLWrappers", "Libdl", "Pixman_jll", "Xorg_libXext_jll", "Xorg_libXrender_jll", "Zlib_jll", "libpng_jll"]
+git-tree-sha1 = "1fa950ebc3e37eccd51c6a8fe1f92f7d86263522"
+uuid = "83423d85-b0ee-5818-9007-b63ccbeb887a"
+version = "1.18.7+0"
+
+[[deps.ColorSchemes]]
+deps = ["ColorTypes", "ColorVectorSpace", "Colors", "FixedPointNumbers", "PrecompileTools", "Random"]
+git-tree-sha1 = "b0fd3f56fa442f81e0a47815c92245acfaaa4e34"
+uuid = "35d6a980-a343-548e-a6ea-1d62b119f2f4"
+version = "3.31.0"
+
+[[deps.ColorTypes]]
+deps = ["FixedPointNumbers", "Random"]
+git-tree-sha1 = "67e11ee83a43eb71ddc950302c53bf33f0690dfe"
+uuid = "3da002f7-5984-5a60-b8a6-cbb66c0b333f"
+version = "0.12.1"
+
+    [deps.ColorTypes.extensions]
+    StyledStringsExt = "StyledStrings"
+
+    [deps.ColorTypes.weakdeps]
+    StyledStrings = "f489334b-da3d-4c2e-b8f0-e476e12c162b"
+
+[[deps.ColorVectorSpace]]
+deps = ["ColorTypes", "FixedPointNumbers", "LinearAlgebra", "Requires", "Statistics", "TensorCore"]
+git-tree-sha1 = "8b3b6f87ce8f65a2b4f857528fd8d70086cd72b1"
+uuid = "c3611d14-8923-5661-9e6a-0046d554d3a4"
+version = "0.11.0"
+weakdeps = ["SpecialFunctions"]
+
+    [deps.ColorVectorSpace.extensions]
+    SpecialFunctionsExt = "SpecialFunctions"
+
+[[deps.Colors]]
+deps = ["ColorTypes", "FixedPointNumbers", "Reexport"]
+git-tree-sha1 = "37ea44092930b1811e666c3bc38065d7d87fcc74"
+uuid = "5ae59095-9a9b-59fe-a467-6f913c188581"
+version = "0.13.1"
+
+[[deps.CommonRLInterface]]
+deps = ["Tricks"]
+git-tree-sha1 = "6c7d1ebb157fdf0f696698ef01946fe93c9efff4"
+uuid = "d842c3ba-07a1-494f-bbec-f5741b0a3e98"
+version = "0.3.3"
+
+[[deps.CommonSolve]]
+git-tree-sha1 = "99ee296f88c12485402e37c2fd025f95ae097637"
+uuid = "38540f10-b2f7-11e9-35d8-d573e4eb0ff2"
+version = "0.2.9"
+
+[[deps.Compat]]
+deps = ["TOML", "UUIDs"]
+git-tree-sha1 = "9d8a54ce4b17aa5bdce0ea5c34bc5e7c340d16ad"
+uuid = "34da2185-b29b-5c13-b0c7-acf172513d20"
+version = "4.18.1"
+weakdeps = ["Dates", "LinearAlgebra"]
+
+    [deps.Compat.extensions]
+    CompatLinearAlgebraExt = "LinearAlgebra"
+
+[[deps.CompilerSupportLibraries_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
+version = "1.1.1+0"
+
+[[deps.CompositionsBase]]
+git-tree-sha1 = "802bb88cd69dfd1509f6670416bd4434015693ad"
+uuid = "a33af91c-f02d-484b-be07-31d278c5ca2b"
+version = "0.1.2"
+weakdeps = ["InverseFunctions"]
+
+    [deps.CompositionsBase.extensions]
+    CompositionsBaseInverseFunctionsExt = "InverseFunctions"
+
+[[deps.ConstructionBase]]
+git-tree-sha1 = "b4b092499347b18a015186eae3042f72267106cb"
+uuid = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
+version = "1.6.0"
+
+    [deps.ConstructionBase.extensions]
+    ConstructionBaseIntervalSetsExt = "IntervalSets"
+    ConstructionBaseLinearAlgebraExt = "LinearAlgebra"
+    ConstructionBaseStaticArraysExt = "StaticArrays"
+
+    [deps.ConstructionBase.weakdeps]
+    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
+    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[[deps.Contour]]
+deps = ["StaticArrays"]
+git-tree-sha1 = "9f02045d934dc030edad45944ea80dbd1f0ebea7"
+uuid = "d38c429a-6771-53c6-b99e-75d170b6e991"
+version = "0.5.7"
+
+[[deps.Crayons]]
+git-tree-sha1 = "249fe38abf76d48563e2f4556bebd215aa317e15"
+uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
+version = "4.1.1"
+
+[[deps.D3Trees]]
+deps = ["AbstractTrees", "JSON", "Random"]
+git-tree-sha1 = "666c295cb25d7f888bef137ce5cb1ba254cd5c4b"
+uuid = "e3df1716-f71e-5df9-9e2d-98e193103c45"
+version = "0.3.2"
+
+[[deps.DataAPI]]
+git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
+uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
+version = "1.16.0"
+
+[[deps.DataFrames]]
+deps = ["Compat", "DataAPI", "DataStructures", "Future", "InlineStrings", "InvertedIndices", "IteratorInterfaceExtensions", "LinearAlgebra", "Markdown", "Missings", "PooledArrays", "PrecompileTools", "PrettyTables", "Printf", "Random", "Reexport", "SentinelArrays", "SortingAlgorithms", "Statistics", "TableTraits", "Tables", "Unicode"]
+git-tree-sha1 = "5fab31e2e01e70ad66e3e24c968c264d1cf166d6"
+uuid = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+version = "1.8.2"
+
+[[deps.DataStructures]]
+deps = ["Compat", "InteractiveUtils", "OrderedCollections"]
+git-tree-sha1 = "4e1fe97fdaed23e9dc21d4d664bea76b65fc50a0"
+uuid = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
+version = "0.18.22"
+
+[[deps.DataValueInterfaces]]
+git-tree-sha1 = "bfc1187b79289637fa0ef6d4436ebdfe6905cbd6"
+uuid = "e2d170a0-9d28-54be-80f0-106bbe20a464"
+version = "1.0.0"
+
+[[deps.Dates]]
+deps = ["Printf"]
+uuid = "ade2ca70-3891-5945-98fb-dc099432e06a"
+
+[[deps.Dbus_jll]]
+deps = ["Artifacts", "Expat_jll", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "473e9afc9cf30814eb67ffa5f2db7df82c3ad9fd"
+uuid = "ee1fde0b-3d02-5ea6-8484-8dfef6360eab"
+version = "1.16.2+0"
+
+[[deps.DelimitedFiles]]
+deps = ["Mmap"]
+git-tree-sha1 = "9e2f36d3c96a820c678f2f1f1782582fcf685bae"
+uuid = "8bb1440f-4735-579b-a4ab-409b98df4dab"
+version = "1.9.1"
+
+[[deps.DiscreteValueIteration]]
+deps = ["LinearAlgebra", "POMDPLinter", "POMDPTools", "POMDPs", "Printf", "SparseArrays"]
+git-tree-sha1 = "4210976635e65e2410aa7662203c1d2090320891"
+uuid = "4b033969-44f6-5439-a48b-c11fa3648068"
+version = "0.4.8"
+
+[[deps.Distributed]]
+deps = ["Random", "Serialization", "Sockets"]
+uuid = "8ba89e20-285c-5b6f-9357-94700520ee1b"
+
+[[deps.Distributions]]
+deps = ["AliasTables", "FillArrays", "LinearAlgebra", "PDMats", "Printf", "QuadGK", "Random", "Roots", "SpecialFunctions", "Statistics", "StatsAPI", "StatsBase", "StatsFuns"]
+git-tree-sha1 = "cd3c5ac74cd3923c8945c6a81518c46abd0e73a3"
+uuid = "31c24e10-a181-5473-b8eb-7969acd0382f"
+version = "0.25.129"
+
+    [deps.Distributions.extensions]
+    DistributionsChainRulesCoreExt = "ChainRulesCore"
+    DistributionsDensityInterfaceExt = "DensityInterface"
+    DistributionsSparseConnectivityTracerExt = "SparseConnectivityTracer"
+    DistributionsTestExt = "Test"
+
+    [deps.Distributions.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    DensityInterface = "b429d917-457f-4dbc-8f4c-0cc954292b1d"
+    SparseConnectivityTracer = "9f842d2f-2579-4b1d-911e-f412cf18a3f5"
+    Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[[deps.DocStringExtensions]]
+git-tree-sha1 = "7442a5dfe1ebb773c29cc2962a8980f47221d76c"
+uuid = "ffbed154-4ef7-542d-bbb7-c09d3a79fcae"
+version = "0.9.5"
+
+[[deps.Downloads]]
+deps = ["ArgTools", "FileWatching", "LibCURL", "NetworkOptions"]
+uuid = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+version = "1.6.0"
+
+[[deps.EarCut_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "e3290f2d49e661fbd94046d7e3726ffcb2d41053"
+uuid = "5ae413db-bbd1-5e63-b57d-d24a61df00f5"
+version = "2.2.4+0"
+
+[[deps.EpollShim_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "8a4be429317c42cfae6a7fc03c31bad1970c310d"
+uuid = "2702e6a9-849d-5ed8-8c21-79e8b8f9ee43"
+version = "0.0.20230411+1"
+
+[[deps.Expat_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "c307cd83373868391f3ac30b41530bc5d5d05d08"
+uuid = "2e619515-83b5-522b-bb60-26c02a35a201"
+version = "2.8.1+0"
+
+[[deps.Extents]]
+git-tree-sha1 = "b309b36a9e02fe7be71270dd8c0fd873625332b4"
+uuid = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
+version = "0.1.6"
+
+[[deps.FFMPEG]]
+deps = ["FFMPEG_jll"]
+git-tree-sha1 = "95ecf07c2eea562b5adbd0696af6db62c0f52560"
+uuid = "c87230d0-a227-11e9-1b43-d7ebe4e7570a"
+version = "0.4.5"
+
+[[deps.FFMPEG_jll]]
+deps = ["Artifacts", "Bzip2_jll", "FreeType2_jll", "FriBidi_jll", "JLLWrappers", "LAME_jll", "Libdl", "Ogg_jll", "OpenSSL_jll", "Opus_jll", "PCRE2_jll", "Pkg", "Zlib_jll", "libaom_jll", "libass_jll", "libfdk_aac_jll", "libvorbis_jll", "x264_jll", "x265_jll"]
+git-tree-sha1 = "74faea50c1d007c85837327f6775bea60b5492dd"
+uuid = "b22a6f82-2f65-5046-a5b2-351ab43fb4e5"
+version = "4.4.2+2"
+
+[[deps.FileWatching]]
+uuid = "7b1f6079-737a-58dc-b8bc-7a2ca5c1b5ee"
+
+[[deps.FillArrays]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "2f979084d1e13948a3352cf64a25df6bd3b4dca3"
+uuid = "1a297f60-69ca-5386-bcde-b61e274b549b"
+version = "1.16.0"
+weakdeps = ["PDMats", "SparseArrays", "StaticArrays", "Statistics"]
+
+    [deps.FillArrays.extensions]
+    FillArraysPDMatsExt = "PDMats"
+    FillArraysSparseArraysExt = "SparseArrays"
+    FillArraysStaticArraysExt = "StaticArrays"
+    FillArraysStatisticsExt = "Statistics"
+
+[[deps.FixedPointNumbers]]
+deps = ["Random", "Statistics"]
+git-tree-sha1 = "59af96b98217c6ef4ae0dfe065ac7c20831d1a84"
+uuid = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
+version = "0.8.6"
+
+[[deps.Fontconfig_jll]]
+deps = ["Artifacts", "Bzip2_jll", "Expat_jll", "FreeType2_jll", "JLLWrappers", "Libdl", "Libuuid_jll", "Zlib_jll"]
+git-tree-sha1 = "f85dac9a96a01087df6e3a749840015a0ca3817d"
+uuid = "a3f928ae-7b40-5064-980b-68af3947d34b"
+version = "2.17.1+0"
+
+[[deps.Formatting]]
+deps = ["Logging", "Printf"]
+git-tree-sha1 = "fb409abab2caf118986fc597ba84b50cbaf00b87"
+uuid = "59287772-0a20-5a39-b81b-1366585eb4c0"
+version = "0.4.3"
+
+[[deps.FreeType2_jll]]
+deps = ["Artifacts", "Bzip2_jll", "JLLWrappers", "Libdl", "Zlib_jll"]
+git-tree-sha1 = "70329abc09b886fd2c5d94ad2d9527639c421e3e"
+uuid = "d7e528f0-a631-5988-bf34-fe36492bcfd7"
+version = "2.14.3+1"
+
+[[deps.FriBidi_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "7a214fdac5ed5f59a22c2d9a885a16da1c74bbc7"
+uuid = "559328eb-81f9-559d-9380-de523a88c83c"
+version = "1.0.17+0"
+
+[[deps.Future]]
+deps = ["Random"]
+uuid = "9fa8497b-333b-5362-9e8d-4d0656e87820"
+
+[[deps.GLFW_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Libglvnd_jll", "Xorg_libXcursor_jll", "Xorg_libXi_jll", "Xorg_libXinerama_jll", "Xorg_libXrandr_jll", "libdecor_jll", "xkbcommon_jll"]
+git-tree-sha1 = "9e0fb9e54594c47f278d75063980e43066e26e20"
+uuid = "0656b61e-2033-5cc2-a64a-77c0f6c09b89"
+version = "3.4.1+1"
+
+[[deps.GR]]
+deps = ["Base64", "DelimitedFiles", "GR_jll", "HTTP", "JSON", "Libdl", "LinearAlgebra", "Pkg", "Printf", "Random", "Serialization", "Sockets", "Test", "UUIDs"]
+git-tree-sha1 = "182da592436e287758ded5be6e32c406de3a2e47"
+uuid = "28b8d3ca-fb5f-59d9-8090-bfdbd6d07a71"
+version = "0.58.1"
+
+[[deps.GR_jll]]
+deps = ["Artifacts", "Bzip2_jll", "Cairo_jll", "FFMPEG_jll", "Fontconfig_jll", "GLFW_jll", "JLLWrappers", "JpegTurbo_jll", "Libdl", "Libtiff_jll", "Pixman_jll", "Pkg", "Qt5Base_jll", "Zlib_jll", "libpng_jll"]
+git-tree-sha1 = "bc9f7725571ddb4ab2c4bc74fa397c1c5ad08943"
+uuid = "d2c73de3-f751-5644-a686-071e5b155ba9"
+version = "0.69.1+0"
+
+[[deps.Gamma]]
+git-tree-sha1 = "86f86b6168a016ed88e4ae4e64577b98c3b59e8e"
+uuid = "a0844989-3bd2-4988-8bea-c9407ab0941b"
+version = "1.1.0"
+
+[[deps.GeoFormatTypes]]
+git-tree-sha1 = "7528a7956248c723d01a0a9b0447bf254bf4da52"
+uuid = "68eda718-8dee-11e9-39e7-89f7f65f511f"
+version = "0.4.5"
+
+[[deps.GeoInterface]]
+deps = ["DataAPI", "Extents", "GeoFormatTypes"]
+git-tree-sha1 = "294e99f19869d0b0cb71aef92f19d03649d028d5"
+uuid = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
+version = "1.4.1"
+
+[[deps.GeometryBasics]]
+deps = ["EarCut_jll", "Extents", "GeoInterface", "IterTools", "LinearAlgebra", "StaticArrays", "StructArrays", "Tables"]
+git-tree-sha1 = "b62f2b2d76cee0d61a2ef2b3118cd2a3215d3134"
+uuid = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
+version = "0.4.11"
+
+[[deps.GettextRuntime_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl", "Libiconv_jll"]
+git-tree-sha1 = "45288942190db7c5f760f59c04495064eedf9340"
+uuid = "b0724c58-0f36-5564-988d-3bb0596ebc4a"
+version = "0.22.4+0"
+
+[[deps.Glib_jll]]
+deps = ["Artifacts", "GettextRuntime_jll", "JLLWrappers", "Libdl", "Libffi_jll", "Libiconv_jll", "Libmount_jll", "PCRE2_jll", "Zlib_jll"]
+git-tree-sha1 = "24f6def62397474a297bfcec22384101609142ed"
+uuid = "7746bdde-850d-59dc-9ae8-88ece973131d"
+version = "2.86.3+0"
+
+[[deps.Graphite2_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "69ffb934a5c5b7e086a0b4fee3427db2556fba6e"
+uuid = "3b182d85-2403-5c21-9c21-1e1f0cc25472"
+version = "1.3.16+0"
+
+[[deps.Graphs]]
+deps = ["ArnoldiMethod", "DataStructures", "Distributed", "Inflate", "LinearAlgebra", "Random", "SharedArrays", "SimpleTraits", "SparseArrays", "Statistics"]
+git-tree-sha1 = "7a98c6502f4632dbe9fb1973a4244eaa3324e84d"
+uuid = "86223c79-3864-5bf0-83f7-82e725a168b6"
+version = "1.13.1"
+
+[[deps.Grisu]]
+git-tree-sha1 = "53bb909d1151e57e2484c3d1b53e19552b887fb2"
+uuid = "42e2da0e-8278-4e71-bc24-59509adca0fe"
+version = "1.0.2"
+
+[[deps.HTTP]]
+deps = ["Base64", "Dates", "IniFile", "Logging", "MbedTLS", "NetworkOptions", "Sockets", "URIs"]
+git-tree-sha1 = "0fa77022fe4b511826b39c894c90daf5fce3334a"
+uuid = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+version = "0.9.17"
+
+[[deps.HarfBuzz_jll]]
+deps = ["Artifacts", "Cairo_jll", "Fontconfig_jll", "FreeType2_jll", "Glib_jll", "Graphite2_jll", "JLLWrappers", "Libdl", "Libffi_jll"]
+git-tree-sha1 = "f923f9a774fcf3f5cb761bfa43aeadd689714813"
+uuid = "2e76f6c2-a576-52d4-95c1-20adfe4de566"
+version = "8.5.1+0"
+
+[[deps.HypergeometricFunctions]]
+deps = ["Gamma", "LinearAlgebra"]
+git-tree-sha1 = "18d7deab5fb0440dc6a7b6993c5c27b25420de10"
+uuid = "34004b35-14d8-5ef3-9330-4cdb6864b03a"
+version = "0.3.29"
+
+[[deps.Hyperscript]]
+deps = ["Test"]
+git-tree-sha1 = "179267cfa5e712760cd43dcae385d7ea90cc25a4"
+uuid = "47d2ed2b-36de-50cf-bf87-49c2cf4b8b91"
+version = "0.0.5"
+
+[[deps.HypertextLiteral]]
+deps = ["Tricks"]
+git-tree-sha1 = "d1a86724f81bcd184a38fd284ce183ec067d71a0"
+uuid = "ac1192a8-f4b3-4bfe-ba22-af5b92cd3ab2"
+version = "1.0.0"
+
+[[deps.IOCapture]]
+deps = ["Logging", "Random"]
+git-tree-sha1 = "0ee181ec08df7d7c911901ea38baf16f755114dc"
+uuid = "b5f81e59-6552-4d32-b1f0-c071b021bf89"
+version = "1.0.0"
+
+[[deps.Inflate]]
+git-tree-sha1 = "d1b1b796e47d94588b3757fe84fbf65a5ec4a80d"
+uuid = "d25df0c9-e2be-5dd7-82c8-3ad0b3e990b9"
+version = "0.1.5"
+
+[[deps.IniFile]]
+git-tree-sha1 = "f550e6e32074c939295eb5ea6de31849ac2c9625"
+uuid = "83e8ac13-25f8-5344-8a64-a9f2b223428f"
+version = "0.5.1"
+
+[[deps.InlineStrings]]
+git-tree-sha1 = "8f3d257792a522b4601c24a577954b0a8cd7334d"
+uuid = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
+version = "1.4.5"
+
+    [deps.InlineStrings.extensions]
+    ArrowTypesExt = "ArrowTypes"
+    ParsersExt = "Parsers"
+
+    [deps.InlineStrings.weakdeps]
+    ArrowTypes = "31f734f8-188a-4ce0-8406-c8a06bd891cd"
+    Parsers = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
+
+[[deps.InteractiveUtils]]
+deps = ["Markdown"]
+uuid = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
+
+[[deps.InverseFunctions]]
+git-tree-sha1 = "a779299d77cd080bf77b97535acecd73e1c5e5cb"
+uuid = "3587e190-3f89-42d0-90ee-14403ec27112"
+version = "0.1.17"
+weakdeps = ["Dates", "Test"]
+
+    [deps.InverseFunctions.extensions]
+    InverseFunctionsDatesExt = "Dates"
+    InverseFunctionsTestExt = "Test"
+
+[[deps.InvertedIndices]]
+git-tree-sha1 = "6da3c4316095de0f5ee2ebd875df8721e7e0bdbe"
+uuid = "41ab1584-1d38-5bbf-9106-f11c6c58b48f"
+version = "1.3.1"
+
+[[deps.IrrationalConstants]]
+git-tree-sha1 = "b2d91fe939cae05960e760110b328288867b5758"
+uuid = "92d709cd-6900-40b7-9082-c6be49f344b6"
+version = "0.2.6"
+
+[[deps.IterTools]]
+git-tree-sha1 = "42d5f897009e7ff2cf88db414a389e5ed1bdd023"
+uuid = "c8e1da08-722c-5040-9ed9-7db0dc04731e"
+version = "1.10.0"
+
+[[deps.IteratorInterfaceExtensions]]
+git-tree-sha1 = "a3f24677c21f5bbe9d2a714f95dcd58337fb2856"
+uuid = "82899510-4779-5014-852e-03e436cf321d"
+version = "1.0.0"
+
+[[deps.JLLWrappers]]
+deps = ["Artifacts", "Preferences"]
+git-tree-sha1 = "7204148362dafe5fe6a273f855b8ccbe4df8173e"
+uuid = "692b3bcd-3c85-4b1f-b108-f13ce0eb3210"
+version = "1.8.0"
+
+[[deps.JSON]]
+deps = ["Dates", "Mmap", "Parsers", "Unicode"]
+git-tree-sha1 = "31e996f0a15c7b280ba9f76636b3ff9e2ae58c9a"
+uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+version = "0.21.4"
+
+[[deps.JpegTurbo_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "c0c9b76f3520863909825cbecdef58cd63de705a"
+uuid = "aacddb02-875f-59d6-b918-886e6ef4fbf8"
+version = "3.1.5+0"
+
+[[deps.LAME_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "059aabebaa7c82ccb853dd4a0ee9d17796f7e1bc"
+uuid = "c1c5ebd0-6772-5130-a774-d5fcae4a789d"
+version = "3.100.3+0"
+
+[[deps.LERC_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "bf36f528eec6634efc60d7ec062008f171071434"
+uuid = "88015f11-f218-50d7-93a8-a6af411a945d"
+version = "3.0.0+1"
+
+[[deps.LLVMOpenMP_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "eb62a3deb62fc6d8822c0c4bef73e4412419c5d8"
+uuid = "1d63c593-3942-5779-bab2-d838dc0a180e"
+version = "18.1.8+0"
+
+[[deps.LaTeXStrings]]
+git-tree-sha1 = "dda21b8cbd6a6c40d9d02a73230f9d70fed6918c"
+uuid = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
+version = "1.4.0"
+
+[[deps.Latexify]]
+deps = ["Formatting", "InteractiveUtils", "LaTeXStrings", "MacroTools", "Markdown", "OrderedCollections", "Printf", "Requires"]
+git-tree-sha1 = "8c57307b5d9bb3be1ff2da469063628631d4d51e"
+uuid = "23fbe1c1-3f47-55db-b15f-69d7ec21a316"
+version = "0.15.21"
+
+    [deps.Latexify.extensions]
+    DataFramesExt = "DataFrames"
+    DiffEqBiologicalExt = "DiffEqBiological"
+    ParameterizedFunctionsExt = "DiffEqBase"
+    SymEngineExt = "SymEngine"
+
+    [deps.Latexify.weakdeps]
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    DiffEqBase = "2b5f629d-d688-5b77-993f-72d75c75574e"
+    DiffEqBiological = "eb300fae-53e8-50a0-950c-e21f52c2b7e0"
+    SymEngine = "123dc426-2d89-5057-bbad-38513e3affd8"
+
+[[deps.LibCURL]]
+deps = ["LibCURL_jll", "MozillaCACerts_jll"]
+uuid = "b27032c2-a3e7-50c8-80cd-2d36dbcbfd21"
+version = "0.6.4"
+
+[[deps.LibCURL_jll]]
+deps = ["Artifacts", "LibSSH2_jll", "Libdl", "MbedTLS_jll", "Zlib_jll", "nghttp2_jll"]
+uuid = "deac9b47-8bc7-5906-a0fe-35ac56dc84c0"
+version = "8.4.0+0"
+
+[[deps.LibGit2]]
+deps = ["Base64", "LibGit2_jll", "NetworkOptions", "Printf", "SHA"]
+uuid = "76f85450-5226-5b5a-8eaa-529ad045b433"
+
+[[deps.LibGit2_jll]]
+deps = ["Artifacts", "LibSSH2_jll", "Libdl", "MbedTLS_jll"]
+uuid = "e37daf67-58a4-590a-8e99-b0245dd2ffc5"
+version = "1.6.4+0"
+
+[[deps.LibSSH2_jll]]
+deps = ["Artifacts", "Libdl", "MbedTLS_jll"]
+uuid = "29816b5a-b9ab-546f-933c-edad1886dfa8"
+version = "1.11.0+1"
+
+[[deps.Libdl]]
+uuid = "8f399da3-3557-5675-b5ff-fb832c97cbdb"
+
+[[deps.Libffi_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "c8da7e6a91781c41a863611c7e966098d783c57a"
+uuid = "e9f186c6-92d2-5b65-8a66-fee21dc1b490"
+version = "3.4.7+0"
+
+[[deps.Libglvnd_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libX11_jll", "Xorg_libXext_jll"]
+git-tree-sha1 = "d36c21b9e7c172a44a10484125024495e2625ac0"
+uuid = "7e76a0d4-f3c7-5321-8279-8d96eeed0f29"
+version = "1.7.1+1"
+
+[[deps.Libiconv_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "be484f5c92fad0bd8acfef35fe017900b0b73809"
+uuid = "94ce4f54-9a6c-5748-9c1c-f9c7231a4531"
+version = "1.18.0+0"
+
+[[deps.Libmount_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "cc3ad4faf30015a3e8094c9b5b7f19e85bdf2386"
+uuid = "4b2f31a3-9ecc-558c-b454-b3730dcb73e9"
+version = "2.42.0+0"
+
+[[deps.Libtiff_jll]]
+deps = ["Artifacts", "JLLWrappers", "JpegTurbo_jll", "LERC_jll", "Libdl", "Pkg", "Zlib_jll", "Zstd_jll"]
+git-tree-sha1 = "3eb79b0ca5764d4799c06699573fd8f533259713"
+uuid = "89763e89-9b03-5906-acba-b20f662cd828"
+version = "4.4.0+0"
+
+[[deps.Libuuid_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "d620582b1f0cbe2c72dd1d5bd195a9ce73370ab1"
+uuid = "38a345b3-de98-5d2b-a5d3-14cd9215e700"
+version = "2.42.0+0"
+
+[[deps.LinearAlgebra]]
+deps = ["Libdl", "OpenBLAS_jll", "libblastrampoline_jll"]
+uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+
+[[deps.LogExpFunctions]]
+deps = ["DocStringExtensions", "IrrationalConstants", "LinearAlgebra"]
+git-tree-sha1 = "bba2d9aa057d8f126415de240573e86a8f39d2a1"
+uuid = "2ab3a3ac-af41-5b50-aa03-7779005ae688"
+version = "1.0.1"
+
+    [deps.LogExpFunctions.extensions]
+    LogExpFunctionsChainRulesCoreExt = "ChainRulesCore"
+    LogExpFunctionsChangesOfVariablesExt = "ChangesOfVariables"
+    LogExpFunctionsInverseFunctionsExt = "InverseFunctions"
+
+    [deps.LogExpFunctions.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    ChangesOfVariables = "9e997f8a-9a97-42d5-a9f1-ce6bfc15e2c0"
+    InverseFunctions = "3587e190-3f89-42d0-90ee-14403ec27112"
+
+[[deps.Logging]]
+uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
+
+[[deps.MCTS]]
+deps = ["Colors", "D3Trees", "POMDPLinter", "POMDPTools", "POMDPs", "Printf", "ProgressMeter", "Random"]
+git-tree-sha1 = "54caa2378219886966d259af1f22a8ffc6bd13b2"
+uuid = "e12ccd36-dcad-5f33-8774-9175229e7b33"
+version = "0.5.7"
+
+[[deps.MIMEs]]
+git-tree-sha1 = "c64d943587f7187e751162b3b84445bbbd79f691"
+uuid = "6c6e2e6c-3030-632d-7369-2d6c69616d65"
+version = "1.1.0"
+
+[[deps.MacroTools]]
+git-tree-sha1 = "1e0228a030642014fe5cfe68c2c0a818f9e3f522"
+uuid = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
+version = "0.5.16"
+
+[[deps.MarchingCubes]]
+deps = ["PrecompileTools", "StaticArrays"]
+git-tree-sha1 = "0e893025924b6becbae4109f8020ac0e12674b01"
+uuid = "299715c1-40a9-479a-aaf9-4a633d36f717"
+version = "0.1.11"
+
+[[deps.Markdown]]
+deps = ["Base64"]
+uuid = "d6f4376e-aef5-505a-96c1-9c027394607a"
+
+[[deps.MbedTLS]]
+deps = ["Dates", "MbedTLS_jll", "MozillaCACerts_jll", "NetworkOptions", "Random", "Sockets"]
+git-tree-sha1 = "8785729fa736197687541f7053f6d8ab7fc44f92"
+uuid = "739be429-bea8-5141-9913-cc70e7f3736d"
+version = "1.1.10"
+
+[[deps.MbedTLS_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "c8ffd9c3-330d-5841-b78e-0817d7145fa1"
+version = "2.28.1010+0"
+
+[[deps.Measures]]
+git-tree-sha1 = "b513cedd20d9c914783d8ad83d08120702bf2c77"
+uuid = "442fdcdd-2543-5da2-b0f3-8c86c306513e"
+version = "0.3.3"
+
+[[deps.Missings]]
+deps = ["DataAPI"]
+git-tree-sha1 = "ec4f7fbeab05d7747bdf98eb74d130a2a2ed298d"
+uuid = "e1d29d7a-bbdc-5cf2-9ac0-f12de2c33e28"
+version = "1.2.0"
+
+[[deps.Mmap]]
+uuid = "a63ad114-7e13-5084-954f-fe012c677804"
+
+[[deps.MozillaCACerts_jll]]
+uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
+version = "2025.12.2"
+
+[[deps.NaNMath]]
+git-tree-sha1 = "b086b7ea07f8e38cf122f5016af580881ac914fe"
+uuid = "77ba4419-2d1f-58cd-9bb1-8ffee604a2e3"
+version = "0.3.7"
+
+[[deps.NamedTupleTools]]
+git-tree-sha1 = "90914795fc59df44120fe3fff6742bb0d7adb1d0"
+uuid = "d9ec5142-1e00-5aa0-9d6a-321866360f50"
+version = "0.14.3"
+
+[[deps.NetworkOptions]]
+uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
+version = "1.2.0"
+
+[[deps.Ogg_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "b6aa4566bb7ae78498a5e68943863fa8b5231b59"
+uuid = "e7412a2a-1a6e-54c0-be00-318e2571c051"
+version = "1.3.6+0"
+
+[[deps.OpenBLAS_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
+uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
+version = "0.3.23+5"
+
+[[deps.OpenLibm_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "05823500-19ac-5b8b-9628-191a04bc5112"
+version = "0.8.5+0"
+
+[[deps.OpenSSL_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "ad31332567b189f508a3ea8957a2640b1147ab00"
+uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
+version = "1.1.23+1"
+
+[[deps.OpenSpecFun_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "1346c9208249809840c91b26703912dff463d335"
+uuid = "efe28fd5-8261-553b-a9e1-b2916fc3738e"
+version = "0.5.6+0"
+
+[[deps.Opus_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "e2bb57a313a74b8104064b7efd01406c0a50d2ff"
+uuid = "91d4177d-7536-5919-b921-800302f37372"
+version = "1.6.1+0"
+
+[[deps.OrderedCollections]]
+git-tree-sha1 = "94ba93778373a53bfd5a0caaf7d809c445292ff4"
+uuid = "bac558e1-5e72-5ebc-8fee-abe8a469f55d"
+version = "1.8.2"
+
+[[deps.PCRE2_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "efcefdf7-47ab-520b-bdef-62a2eaa19f15"
+version = "10.42.0+1"
+
+[[deps.PDMats]]
+deps = ["LinearAlgebra", "SparseArrays", "SuiteSparse"]
+git-tree-sha1 = "f07c06228a1c670ae4c87d1276b92c7c597fdda0"
+uuid = "90014a1f-27ba-587c-ab20-58faa44d9150"
+version = "0.11.35"
+
+[[deps.POMDPLinter]]
+deps = ["Logging"]
+git-tree-sha1 = "863f15ca84aec9015e9954ac0fd56ce93a5dd745"
+uuid = "f3bd98c0-eb40-45e2-9eb1-f2763262d755"
+version = "0.1.3"
+
+[[deps.POMDPModelTools]]
+deps = ["CommonRLInterface", "Distributions", "LinearAlgebra", "POMDPLinter", "POMDPTools", "POMDPs", "Random", "Reexport", "SparseArrays", "Statistics", "Tricks", "UnicodePlots"]
+git-tree-sha1 = "36d32d62e036ae8ebb9b8efe9e8658f902815700"
+uuid = "08074719-1b2a-587c-a292-00f91cc44415"
+version = "0.3.13"
+
+[[deps.POMDPPolicies]]
+deps = ["Distributions", "LinearAlgebra", "POMDPTools", "POMDPs", "Parameters", "Random", "Reexport", "SparseArrays", "StatsBase"]
+git-tree-sha1 = "bd72fbfea89a64946963518aa53097e2a1233c59"
+uuid = "182e52fb-cfd0-5e46-8c26-fd0667c990f4"
+version = "0.4.3"
+
+[[deps.POMDPTools]]
+deps = ["CommonRLInterface", "DataFrames", "Distributed", "Distributions", "LinearAlgebra", "NamedTupleTools", "POMDPLinter", "POMDPs", "Parameters", "ProgressMeter", "Random", "Reexport", "SparseArrays", "Statistics", "StatsBase", "Tricks", "UnicodePlots"]
+git-tree-sha1 = "6b7e405f2c1905aff6f07ee4d241fd608d289d66"
+uuid = "7588e00f-9cae-40de-98dc-e0c70c48cdd7"
+version = "0.1.6"
+
+[[deps.POMDPs]]
+deps = ["Distributions", "Graphs", "NamedTupleTools", "POMDPLinter", "Pkg", "Random", "Statistics"]
+git-tree-sha1 = "9a6fe01a75a23cfb8a4d7af43f95ff3db16694f1"
+uuid = "a93abf59-7444-517b-a68a-c42f96afdd7d"
+version = "0.9.6"
+
+[[deps.Pango_jll]]
+deps = ["Artifacts", "Cairo_jll", "Fontconfig_jll", "FreeType2_jll", "FriBidi_jll", "Glib_jll", "HarfBuzz_jll", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "58e5ed5e386e156bd93e86b305ebd21ac63d2d04"
+uuid = "36c8627f-9965-5494-a995-c6b170f724f3"
+version = "1.57.1+0"
+
+[[deps.Parameters]]
+deps = ["OrderedCollections", "UnPack"]
+git-tree-sha1 = "34c0e9ad262e5f7fc75b10a9952ca7692cfc5fbe"
+uuid = "d96e819e-fc66-5662-9728-84c9c7592b0a"
+version = "0.12.3"
+
+[[deps.Parsers]]
+deps = ["Dates", "PrecompileTools", "UUIDs"]
+git-tree-sha1 = "32a4e09c5f29402573d673901778a0e03b0807b9"
+uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
+version = "2.8.6"
+
+[[deps.Pixman_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LLVMOpenMP_jll", "Libdl"]
+git-tree-sha1 = "e4a6721aa89e62e5d4217c0b21bd714263779dda"
+uuid = "30392449-352a-5448-841d-b1acce4e97dc"
+version = "0.46.4+0"
+
+[[deps.Pkg]]
+deps = ["Artifacts", "Dates", "Downloads", "FileWatching", "LibGit2", "Libdl", "Logging", "Markdown", "Printf", "REPL", "Random", "SHA", "Serialization", "TOML", "Tar", "UUIDs", "p7zip_jll"]
+uuid = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+version = "1.10.0"
+
+[[deps.PlotThemes]]
+deps = ["PlotUtils", "Requires", "Statistics"]
+git-tree-sha1 = "a3a964ce9dc7898193536002a6dd892b1b5a6f1d"
+uuid = "ccf2f8ad-2431-5c83-bf29-c5338b663b6a"
+version = "2.0.1"
+
+[[deps.PlotUtils]]
+deps = ["ColorSchemes", "Colors", "Dates", "PrecompileTools", "Printf", "Random", "Reexport", "StableRNGs", "Statistics"]
+git-tree-sha1 = "26ca162858917496748aad52bb5d3be4d26a228a"
+uuid = "995b91a9-d308-5afd-9ec6-746e21dbc043"
+version = "1.4.4"
+
+[[deps.Plots]]
+deps = ["Base64", "Contour", "Dates", "FFMPEG", "FixedPointNumbers", "GR", "GeometryBasics", "JSON", "Latexify", "LinearAlgebra", "Measures", "NaNMath", "PlotThemes", "PlotUtils", "Printf", "REPL", "Random", "RecipesBase", "RecipesPipeline", "Reexport", "Requires", "Scratch", "Showoff", "SparseArrays", "Statistics", "StatsBase", "UUIDs"]
+git-tree-sha1 = "e39bea10478c6aff5495ab522517fae5134b40e3"
+uuid = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+version = "1.20.0"
+
+[[deps.PlutoUI]]
+deps = ["AbstractPlutoDingetjes", "Base64", "ColorTypes", "Dates", "Downloads", "FixedPointNumbers", "Hyperscript", "HypertextLiteral", "IOCapture", "InteractiveUtils", "Logging", "MIMEs", "Markdown", "Random", "Reexport", "URIs", "UUIDs"]
+git-tree-sha1 = "e189d0623e7ce9c37389bac17e80aac3b0302e75"
+uuid = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
+version = "0.7.83"
+
+[[deps.PooledArrays]]
+deps = ["DataAPI", "Future"]
+git-tree-sha1 = "36d8b4b899628fb92c2749eb488d884a926614d3"
+uuid = "2dfb63ee-cc39-5dd5-95bd-886bf059d720"
+version = "1.4.3"
+
+[[deps.PrecompileTools]]
+deps = ["Preferences"]
+git-tree-sha1 = "5aa36f7049a63a1528fe8f7c3f2113413ffd4e1f"
+uuid = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
+version = "1.2.1"
+
+[[deps.Preferences]]
+deps = ["TOML"]
+git-tree-sha1 = "8b770b60760d4451834fe79dd483e318eee709c4"
+uuid = "21216c6a-2e73-6563-6e65-726566657250"
+version = "1.5.2"
+
+[[deps.PrettyTables]]
+deps = ["Crayons", "LaTeXStrings", "Markdown", "PrecompileTools", "Printf", "REPL", "Reexport", "StringManipulation", "Tables"]
+git-tree-sha1 = "624de6279ab7d94fc9f672f0068107eb6619732c"
+uuid = "08abe8d2-0d0c-5749-adfa-8a2ac140af0d"
+version = "3.3.2"
+
+    [deps.PrettyTables.extensions]
+    PrettyTablesTypstryExt = "Typstry"
+
+    [deps.PrettyTables.weakdeps]
+    Typstry = "f0ed7684-a786-439e-b1e3-3b82803b501e"
+
+[[deps.Printf]]
+deps = ["Unicode"]
+uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+
+[[deps.ProgressMeter]]
+deps = ["Distributed", "Printf"]
+git-tree-sha1 = "fbb92c6c56b34e1a2c4c36058f68f332bec840e7"
+uuid = "92933f4c-e287-5a05-a399-4b506db050ca"
+version = "1.11.0"
+
+[[deps.PtrArrays]]
+git-tree-sha1 = "4fbbafbc6251b883f4d2705356f3641f3652a7fe"
+uuid = "43287f4e-b6f4-7ad1-bb20-aadabca52c3d"
+version = "1.4.0"
+
+[[deps.Qt5Base_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "Fontconfig_jll", "Glib_jll", "JLLWrappers", "Libdl", "Libglvnd_jll", "OpenSSL_jll", "Pkg", "Xorg_libXext_jll", "Xorg_libxcb_jll", "Xorg_xcb_util_image_jll", "Xorg_xcb_util_keysyms_jll", "Xorg_xcb_util_renderutil_jll", "Xorg_xcb_util_wm_jll", "Zlib_jll", "xkbcommon_jll"]
+git-tree-sha1 = "0c03844e2231e12fda4d0086fd7cbe4098ee8dc5"
+uuid = "ea2cea3b-5b76-57ae-a6ef-0a8af62496e1"
+version = "5.15.3+2"
+
+[[deps.QuadGK]]
+deps = ["DataStructures", "LinearAlgebra"]
+git-tree-sha1 = "5e8e8b0ab68215d7a2b14b9921a946fee794749e"
+uuid = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
+version = "2.11.3"
+
+    [deps.QuadGK.extensions]
+    QuadGKEnzymeExt = "Enzyme"
+
+    [deps.QuadGK.weakdeps]
+    Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+
+[[deps.QuickPOMDPs]]
+deps = ["NamedTupleTools", "POMDPTools", "POMDPs", "Random", "Tricks", "UUIDs"]
+git-tree-sha1 = "eaba1073436ee7d05605fb6958202249130f6366"
+uuid = "8af83fb2-a731-493c-9049-9e19dbce6165"
+version = "0.2.15"
+
+[[deps.REPL]]
+deps = ["InteractiveUtils", "Markdown", "Sockets", "Unicode"]
+uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
+
+[[deps.Random]]
+deps = ["SHA"]
+uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[[deps.RecipesBase]]
+deps = ["PrecompileTools"]
+git-tree-sha1 = "5c3d09cc4f31f5fc6af001c250bf1278733100ff"
+uuid = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
+version = "1.3.4"
+
+[[deps.RecipesPipeline]]
+deps = ["Dates", "NaNMath", "PlotUtils", "RecipesBase"]
+git-tree-sha1 = "1f27772b89958deed68d2709e5f08a5e5f59a5af"
+uuid = "01d81517-befc-4cb6-b9ec-a95719d0359c"
+version = "0.3.7"
+
+[[deps.Reexport]]
+git-tree-sha1 = "45e428421666073eab6f2da5c9d310d99bb12f9b"
+uuid = "189a3867-3050-52da-a836-e630ba90ab69"
+version = "1.2.2"
+
+[[deps.Requires]]
+deps = ["UUIDs"]
+git-tree-sha1 = "62389eeff14780bfe55195b7204c0d8738436d64"
+uuid = "ae029012-a4dd-5104-9daa-d747884805df"
+version = "1.3.1"
+
+[[deps.Rmath]]
+deps = ["Random", "Rmath_jll"]
+git-tree-sha1 = "5b3d50eb374cea306873b371d3f8d3915a018f0b"
+uuid = "79098fc4-a85e-5d69-aa6a-4863f24498fa"
+version = "0.9.0"
+
+[[deps.Rmath_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "58cdd8fb2201a6267e1db87ff148dd6c1dbd8ad8"
+uuid = "f50d1b31-88e8-58de-be2c-1cc44531875f"
+version = "0.5.1+0"
+
+[[deps.Roots]]
+deps = ["Accessors", "CommonSolve", "Printf"]
+git-tree-sha1 = "ed45bcc7cf3c8887595b973f2b1efbe91dcc50ec"
+uuid = "f2b01f46-fcfa-551c-844a-d8ac1e96c665"
+version = "3.0.1"
+
+    [deps.Roots.extensions]
+    RootsChainRulesCoreExt = "ChainRulesCore"
+    RootsForwardDiffExt = "ForwardDiff"
+    RootsIntervalRootFindingExt = "IntervalRootFinding"
+    RootsSymPyExt = "SymPy"
+    RootsSymPyPythonCallExt = "SymPyPythonCall"
+    RootsUnitfulExt = "Unitful"
+
+    [deps.Roots.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+    IntervalRootFinding = "d2bf35a9-74e0-55ec-b149-d360ff49b807"
+    SymPy = "24249f21-da20-56a4-8eb1-6a02cf4ae2e6"
+    SymPyPythonCall = "bc8888f7-b21e-4b7c-a06a-5d9c9496438c"
+    Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[[deps.SHA]]
+uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+version = "0.7.0"
+
+[[deps.Scratch]]
+deps = ["Dates"]
+git-tree-sha1 = "9b81b8393e50b7d4e6d0a9f14e192294d3b7c109"
+uuid = "6c6a2e73-6563-6170-7368-637461726353"
+version = "1.3.0"
+
+[[deps.SentinelArrays]]
+deps = ["Dates", "Random"]
+git-tree-sha1 = "084c47c7c5ce5cfecefa0a98dff69eb3646b5a80"
+uuid = "91c51154-3ec4-41a3-a24f-3f23e20d615c"
+version = "1.4.10"
+
+[[deps.Serialization]]
+uuid = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+
+[[deps.SharedArrays]]
+deps = ["Distributed", "Mmap", "Random", "Serialization"]
+uuid = "1a1011a3-84de-559e-8e89-a11a2f7dc383"
+
+[[deps.Showoff]]
+deps = ["Dates", "Grisu"]
+git-tree-sha1 = "91eddf657aca81df9ae6ceb20b959ae5653ad1de"
+uuid = "992d4aef-0814-514b-bc4d-f2e9a6c4116f"
+version = "1.0.3"
+
+[[deps.SimpleTraits]]
+deps = ["InteractiveUtils", "MacroTools"]
+git-tree-sha1 = "7ddb0b49c109481b046972c0e4ab02b2127d6a75"
+uuid = "699a6c99-e7fa-54fc-8d76-47d257e15c1d"
+version = "0.9.6"
+
+[[deps.Sockets]]
+uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
+
+[[deps.SortingAlgorithms]]
+deps = ["DataStructures"]
+git-tree-sha1 = "13cd91cc9be159e3f4d95b857fa2aa383b53772a"
+uuid = "a2af1166-a08f-5f64-846c-94a0d3cef48c"
+version = "1.2.3"
+
+[[deps.SparseArrays]]
+deps = ["Libdl", "LinearAlgebra", "Random", "Serialization", "SuiteSparse_jll"]
+uuid = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+version = "1.10.0"
+
+[[deps.SpecialFunctions]]
+deps = ["IrrationalConstants", "LogExpFunctions", "OpenLibm_jll", "OpenSpecFun_jll"]
+git-tree-sha1 = "6547cbdd8ce32efba0d21c5a40fa96d1a3548f9f"
+uuid = "276daf66-3868-5448-9aa4-cd146d93841b"
+version = "2.8.0"
+
+    [deps.SpecialFunctions.extensions]
+    SpecialFunctionsChainRulesCoreExt = "ChainRulesCore"
+
+    [deps.SpecialFunctions.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+
+[[deps.StableRNGs]]
+deps = ["Random"]
+git-tree-sha1 = "4f96c596b8c8258cc7d3b19797854d368f243ddc"
+uuid = "860ef19b-820b-49d6-a774-d7a799459cd3"
+version = "1.0.4"
+
+[[deps.StaticArrays]]
+deps = ["LinearAlgebra", "PrecompileTools", "Random", "StaticArraysCore"]
+git-tree-sha1 = "246a8bb2e6667f832eea063c3a56aef96429a3db"
+uuid = "90137ffa-7385-5640-81b9-e52037218182"
+version = "1.9.18"
+
+    [deps.StaticArrays.extensions]
+    StaticArraysChainRulesCoreExt = "ChainRulesCore"
+    StaticArraysStatisticsExt = "Statistics"
+
+    [deps.StaticArrays.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[[deps.StaticArraysCore]]
+git-tree-sha1 = "6ab403037779dae8c514bad259f32a447262455a"
+uuid = "1e83bf80-4336-4d27-bf5d-d5a4f845583c"
+version = "1.4.4"
+
+[[deps.Statistics]]
+deps = ["LinearAlgebra", "SparseArrays"]
+uuid = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+version = "1.10.0"
+
+[[deps.StatsAPI]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "178ed29fd5b2a2cfc3bd31c13375ae925623ff36"
+uuid = "82ae8749-77ed-4fe6-ae5f-f523153014b0"
+version = "1.8.0"
+
+[[deps.StatsBase]]
+deps = ["DataAPI", "DataStructures", "LinearAlgebra", "Missings", "Printf", "Random", "SortingAlgorithms", "SparseArrays", "Statistics", "StatsAPI"]
+git-tree-sha1 = "8cbbc098554648c84f79a463c9ff0fd277144b6c"
+uuid = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
+version = "0.33.10"
+
+[[deps.StatsFuns]]
+deps = ["HypergeometricFunctions", "IrrationalConstants", "LogExpFunctions", "Reexport", "Rmath", "SpecialFunctions"]
+git-tree-sha1 = "770240df9a3b8888065046948f7a09b4e0f997d5"
+uuid = "4c63d2b9-4356-54db-8cca-17b64c39e42c"
+version = "2.2.0"
+
+    [deps.StatsFuns.extensions]
+    StatsFunsChainRulesCoreExt = "ChainRulesCore"
+    StatsFunsInverseFunctionsExt = "InverseFunctions"
+
+    [deps.StatsFuns.weakdeps]
+    ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+    InverseFunctions = "3587e190-3f89-42d0-90ee-14403ec27112"
+
+[[deps.StringManipulation]]
+deps = ["PrecompileTools"]
+git-tree-sha1 = "d05693d339e37d6ab134c5ab53c29fce5ee5d7d5"
+uuid = "892a3eda-7b42-436c-8928-eab12a02cf0e"
+version = "0.4.4"
+
+[[deps.StructArrays]]
+deps = ["ConstructionBase", "DataAPI", "Tables"]
+git-tree-sha1 = "9537ef82c42cdd8c5d443cbc359110cbb36bae10"
+uuid = "09ab397b-f2b6-538f-b94a-2f83cf4a842a"
+version = "0.6.21"
+
+    [deps.StructArrays.extensions]
+    StructArraysAdaptExt = "Adapt"
+    StructArraysGPUArraysCoreExt = ["GPUArraysCore", "KernelAbstractions"]
+    StructArraysLinearAlgebraExt = "LinearAlgebra"
+    StructArraysSparseArraysExt = "SparseArrays"
+    StructArraysStaticArraysExt = "StaticArrays"
+
+    [deps.StructArrays.weakdeps]
+    Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+    GPUArraysCore = "46192b85-c4d5-4398-a991-12ede77f4527"
+    KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+    LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+    SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
+[[deps.SuiteSparse]]
+deps = ["Libdl", "LinearAlgebra", "Serialization", "SparseArrays"]
+uuid = "4607b0f0-06f3-5cda-b6b1-a6196a1729e9"
+
+[[deps.SuiteSparse_jll]]
+deps = ["Artifacts", "Libdl", "libblastrampoline_jll"]
+uuid = "bea87d4a-7f5b-5778-9afe-8cc45184846c"
+version = "7.2.1+1"
+
+[[deps.TOML]]
+deps = ["Dates"]
+uuid = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+version = "1.0.3"
+
+[[deps.TableTraits]]
+deps = ["IteratorInterfaceExtensions"]
+git-tree-sha1 = "c06b2f539df1c6efa794486abfb6ed2022561a39"
+uuid = "3783bdb8-4a98-5b6b-af9a-565f29a5fe9c"
+version = "1.0.1"
+
+[[deps.Tables]]
+deps = ["DataAPI", "DataValueInterfaces", "IteratorInterfaceExtensions", "OrderedCollections", "TableTraits"]
+git-tree-sha1 = "0f38a06c83f0007bbab3cf911262841c9a0f07e0"
+uuid = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
+version = "1.13.0"
+
+[[deps.TabularTDLearning]]
+deps = ["DataStructures", "POMDPLinter", "POMDPTools", "POMDPs", "Random"]
+git-tree-sha1 = "a57d74bb9a75c2625f4b02a0b42c5c8226315ac5"
+uuid = "df77095f-98f0-51e5-a706-d0ff5a5ad33f"
+version = "0.4.5"
+
+[[deps.Tar]]
+deps = ["ArgTools", "SHA"]
+uuid = "a4e569a6-e804-4fa4-b0f3-eef7a1d5b13e"
+version = "1.10.0"
+
+[[deps.TensorCore]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "1feb45f88d133a655e001435632f019a9a1bcdb6"
+uuid = "62fd8b95-f654-4bbd-a8a5-9c27f68ccd50"
+version = "0.1.1"
+
+[[deps.Test]]
+deps = ["InteractiveUtils", "Logging", "Random", "Serialization"]
+uuid = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[[deps.Tricks]]
+git-tree-sha1 = "311349fd1c93a31f783f977a71e8b062a57d4101"
+uuid = "410a4b4d-49e4-4fbc-ab6d-cb71b17b3775"
+version = "0.1.13"
+
+[[deps.URIs]]
+git-tree-sha1 = "bef26fb046d031353ef97a82e3fdb6afe7f21b1a"
+uuid = "5c2747f8-b7ea-4ff2-ba2e-563bfd36b1d4"
+version = "1.6.1"
+
+[[deps.UUIDs]]
+deps = ["Random", "SHA"]
+uuid = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[[deps.UnPack]]
+git-tree-sha1 = "387c1f73762231e86e0c9c5443ce3b4a0a9a0c2b"
+uuid = "3a884ed6-31ef-47d7-9d2a-63182c4928ed"
+version = "1.0.2"
+
+[[deps.Unicode]]
+uuid = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
+
+[[deps.UnicodePlots]]
+deps = ["Contour", "Crayons", "Dates", "LinearAlgebra", "MarchingCubes", "NaNMath", "SparseArrays", "StaticArrays", "StatsBase", "Unitful"]
+git-tree-sha1 = "1785494cb9484f9ab05bbc9d81a2d4de4341eb39"
+uuid = "b8865327-cd53-5732-bb35-84acbb429228"
+version = "2.9.0"
+
+[[deps.Unitful]]
+deps = ["ConstructionBase", "LinearAlgebra", "Random"]
+git-tree-sha1 = "fdfbea79b5b9a305bf226eb4730321f603281290"
+uuid = "1986cc42-f94f-5a68-af5c-568840ba703d"
+version = "1.6.0"
+
+[[deps.Wayland_jll]]
+deps = ["Artifacts", "EpollShim_jll", "Expat_jll", "JLLWrappers", "Libdl", "Libffi_jll"]
+git-tree-sha1 = "96478df35bbc2f3e1e791bc7a3d0eeee559e60e9"
+uuid = "a2964d1f-97da-50d4-b82a-358c7fce9d89"
+version = "1.24.0+0"
+
+[[deps.Xorg_libX11_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libxcb_jll", "Xorg_xtrans_jll"]
+git-tree-sha1 = "808090ede1d41644447dd5cbafced4731c56bd2f"
+uuid = "4f6342f7-b3d2-589e-9d20-edeb45f2b2bc"
+version = "1.8.13+0"
+
+[[deps.Xorg_libXau_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "aa1261ebbac3ccc8d16558ae6799524c450ed16b"
+uuid = "0c0b7dd1-d40b-584c-a123-a41640f87eec"
+version = "1.0.13+0"
+
+[[deps.Xorg_libXcursor_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libXfixes_jll", "Xorg_libXrender_jll"]
+git-tree-sha1 = "6c74ca84bbabc18c4547014765d194ff0b4dc9da"
+uuid = "935fb764-8cf2-53bf-bb30-45bb1f8bf724"
+version = "1.2.4+0"
+
+[[deps.Xorg_libXdmcp_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "52858d64353db33a56e13c341d7bf44cd0d7b309"
+uuid = "a3789734-cfe1-5b06-b2d0-1dd0d9d62d05"
+version = "1.1.6+0"
+
+[[deps.Xorg_libXext_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libX11_jll"]
+git-tree-sha1 = "1a4a26870bf1e5d26cd585e38038d399d7e65706"
+uuid = "1082639a-0dae-5f34-9b06-72781eeb8cb3"
+version = "1.3.8+0"
+
+[[deps.Xorg_libXfixes_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libX11_jll"]
+git-tree-sha1 = "75e00946e43621e09d431d9b95818ee751e6b2ef"
+uuid = "d091e8ba-531a-589c-9de9-94069b037ed8"
+version = "6.0.2+0"
+
+[[deps.Xorg_libXi_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libXext_jll", "Xorg_libXfixes_jll"]
+git-tree-sha1 = "a376af5c7ae60d29825164db40787f15c80c7c54"
+uuid = "a51aa0fd-4e3c-5386-b890-e753decda492"
+version = "1.8.3+0"
+
+[[deps.Xorg_libXinerama_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libXext_jll"]
+git-tree-sha1 = "0ba01bc7396896a4ace8aab67db31403c71628f4"
+uuid = "d1454406-59df-5ea1-beac-c340f2130bc3"
+version = "1.1.7+0"
+
+[[deps.Xorg_libXrandr_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libXext_jll", "Xorg_libXrender_jll"]
+git-tree-sha1 = "6c174ef70c96c76f4c3f4d3cfbe09d018bcd1b53"
+uuid = "ec84b674-ba8e-5d96-8ba1-2a689ba10484"
+version = "1.5.6+0"
+
+[[deps.Xorg_libXrender_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libX11_jll"]
+git-tree-sha1 = "7ed9347888fac59a618302ee38216dd0379c480d"
+uuid = "ea2f1a96-1ddc-540d-b46f-429655e07cfa"
+version = "0.9.12+0"
+
+[[deps.Xorg_libxcb_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libXau_jll", "Xorg_libXdmcp_jll"]
+git-tree-sha1 = "bfcaf7ec088eaba362093393fe11aa141fa15422"
+uuid = "c7cfdc94-dc32-55de-ac96-5a1b8d977c5b"
+version = "1.17.1+0"
+
+[[deps.Xorg_libxkbfile_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libX11_jll"]
+git-tree-sha1 = "ed756a03e95fff88d8f738ebc2849431bdd4fd1a"
+uuid = "cc61e674-0454-545c-8b26-ed2c68acab7a"
+version = "1.2.0+0"
+
+[[deps.Xorg_xcb_util_image_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_xcb_util_jll"]
+git-tree-sha1 = "f4fc02e384b74418679983a97385644b67e1263b"
+uuid = "12413925-8142-5f55-bb0e-6d7ca50bb09b"
+version = "0.4.1+0"
+
+[[deps.Xorg_xcb_util_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libxcb_jll"]
+git-tree-sha1 = "68da27247e7d8d8dafd1fcf0c3654ad6506f5f97"
+uuid = "2def613f-5ad1-5310-b15b-b15d46f528f5"
+version = "0.4.1+0"
+
+[[deps.Xorg_xcb_util_keysyms_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_xcb_util_jll"]
+git-tree-sha1 = "44ec54b0e2acd408b0fb361e1e9244c60c9c3dd4"
+uuid = "975044d2-76e6-5fbe-bf08-97ce7c6574c7"
+version = "0.4.1+0"
+
+[[deps.Xorg_xcb_util_renderutil_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_xcb_util_jll"]
+git-tree-sha1 = "5b0263b6d080716a02544c55fdff2c8d7f9a16a0"
+uuid = "0d47668e-0667-5a69-a72c-f761630bfb7e"
+version = "0.3.10+0"
+
+[[deps.Xorg_xcb_util_wm_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_xcb_util_jll"]
+git-tree-sha1 = "f233c83cad1fa0e70b7771e0e21b061a116f2763"
+uuid = "c22f9ab0-d5fe-5066-847c-f4bb1cd4e361"
+version = "0.4.2+0"
+
+[[deps.Xorg_xkbcomp_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libxkbfile_jll"]
+git-tree-sha1 = "801a858fc9fb90c11ffddee1801bb06a738bda9b"
+uuid = "35661453-b289-5fab-8a00-3d9160c6a3a4"
+version = "1.4.7+0"
+
+[[deps.Xorg_xkeyboard_config_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_xkbcomp_jll"]
+git-tree-sha1 = "ed349d26affcacafbc7fc2941ace1fb98f71e715"
+uuid = "33bec58e-1273-512f-9401-5d533626f822"
+version = "2.47.0+1"
+
+[[deps.Xorg_xtrans_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "a63799ff68005991f9d9491b6e95bd3478d783cb"
+uuid = "c5fb5394-a638-5e4d-96e5-b29de1b5cf10"
+version = "1.6.0+0"
+
+[[deps.Zlib_jll]]
+deps = ["Libdl"]
+uuid = "83775a58-1f1d-513f-b197-d71354ab007a"
+version = "1.2.13+1"
+
+[[deps.Zstd_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "446b23e73536f84e8037f5dce465e92275f6a308"
+uuid = "3161d3a3-bdf6-5164-811a-617609db77b4"
+version = "1.5.7+1"
+
+[[deps.libaom_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "850b06095ee71f0135d644ffd8a52850699581ed"
+uuid = "a4ae2306-e953-59d6-aa16-d00cac43593b"
+version = "3.13.3+0"
+
+[[deps.libass_jll]]
+deps = ["Artifacts", "Bzip2_jll", "FreeType2_jll", "FriBidi_jll", "HarfBuzz_jll", "JLLWrappers", "Libdl", "Zlib_jll"]
+git-tree-sha1 = "e17c115d55c5fbb7e52ebedb427a0dca79d4484e"
+uuid = "0ac62f75-1d6f-5e53-bd7c-93b484bb37c0"
+version = "0.15.2+0"
+
+[[deps.libblastrampoline_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "8e850b90-86db-534c-a0d3-1478176c7d93"
+version = "5.11.0+0"
+
+[[deps.libdecor_jll]]
+deps = ["Artifacts", "Dbus_jll", "JLLWrappers", "Libdl", "Libglvnd_jll", "Pango_jll", "Wayland_jll", "xkbcommon_jll"]
+git-tree-sha1 = "9bf7903af251d2050b467f76bdbe57ce541f7f4f"
+uuid = "1183f4f0-6f2a-5f1a-908b-139f9cdfea6f"
+version = "0.2.2+0"
+
+[[deps.libfdk_aac_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "646634dd19587a56ee2f1199563ec056c5f228df"
+uuid = "f638f0a6-7fb0-5443-88ba-1cc74229b280"
+version = "2.0.4+0"
+
+[[deps.libpng_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Zlib_jll"]
+git-tree-sha1 = "e51150d5ab85cee6fc36726850f0e627ad2e4aba"
+uuid = "b53b4c65-9356-5827-b1ea-8c7a1a84506f"
+version = "1.6.58+0"
+
+[[deps.libvorbis_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Ogg_jll"]
+git-tree-sha1 = "11e1772e7f3cc987e9d3de991dd4f6b2602663a5"
+uuid = "f27f6e37-5d2b-51aa-960f-b287f2bc3b7a"
+version = "1.3.8+0"
+
+[[deps.nghttp2_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "8e850ede-7688-5339-a07c-302acd2aaf8d"
+version = "1.52.0+1"
+
+[[deps.p7zip_jll]]
+deps = ["Artifacts", "Libdl"]
+uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
+version = "17.6.1+0"
+
+[[deps.x264_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "4fea590b89e6ec504593146bf8b988b2c00922b2"
+uuid = "1270edf5-f2f9-52d2-97e9-ab00b5d0237a"
+version = "2021.5.5+0"
+
+[[deps.x265_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
+git-tree-sha1 = "ee567a171cce03570d77ad3a43e90218e38937a9"
+uuid = "dfaa095f-4041-5dcd-9319-2fabd8486b76"
+version = "3.5.0+0"
+
+[[deps.xkbcommon_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Xorg_libxcb_jll", "Xorg_xkeyboard_config_jll"]
+git-tree-sha1 = "a1fc6507a40bf504527d0d4067d718f8e179b2b8"
+uuid = "d8fb68d0-12a3-5cfd-a85a-d49703b185fd"
+version = "1.13.0+0"
+"""
+
+# ╔═╡ Cell order:
+# ╟─dbb9d285-dba4-45e1-b5ee-00e8ee4688cf
+# ╟─a0528e7f-8796-4765-b3d0-fda20e371eb3
+# ╠═268eeb20-76fd-11f1-ad7c-a3a23f983fe8
+# ╠═01ba4392-dbad-4270-9822-2181a55ee356
+# ╠═0386e7f2-2ae2-4b86-96f7-19f606ac5058
+# ╠═86b8a07f-468d-4fee-9fed-38b98813214d
+# ╠═f53d51eb-6711-4423-b6b1-c1bf721473cd
+# ╟─8474a9ba-c768-4f5a-af2f-a0a432f179fc
+# ╟─0aec5dc2-b0f7-4f8b-85af-38d8ec3236ad
+# ╠═ee36abe2-029e-42df-ac4f-56fc67e9aef4
+# ╟─d38ae102-edbc-4d4f-9c5e-27e3e8fc3ee4
+# ╠═d1c17a14-4dd9-4237-a147-82c4fef4edc2
+# ╠═44467390-1863-4824-9269-33ea808afdc5
+# ╟─9d8e0ba7-1305-4698-bef3-dbe9aecf1c42
+# ╠═8dc09b62-f2f0-4213-b4f5-a25dd10b5143
+# ╟─c34e798b-86ac-41a2-857c-49a9c18c6d63
+# ╟─82568711-3dcf-476c-a64d-c28e94bc1677
+# ╠═7acd6924-a53b-4c0d-bdc1-85d5436a70f9
+# ╟─87d7ab96-6089-4598-a88c-677adf1b38d1
+# ╠═ffb17dc5-613f-459d-a051-bee69b241cf4
+# ╠═c2608460-64d5-41ea-aef8-ade74170ded7
+# ╟─e7c845e2-6d24-427f-9277-c690b1def22f
+# ╠═e9821377-c3b3-49d1-9d4f-83b31fa2bba9
+# ╟─35516802-97bd-40dc-bc03-146e87e17eca
+# ╠═f712d4a3-abfd-40d1-a13e-25f22dc4bee4
+# ╠═7092ad03-9c9d-4cb7-8487-f26aaddcbe39
+# ╠═5c27b02b-a3d5-4053-a519-fff3fbe8b00c
+# ╟─4a21f9a1-b8d5-43bc-b4f0-6bca9ac2d209
+# ╠═9c4f47d7-244a-4c1f-be2e-9414cfd52f5b
+# ╟─3cb9145e-3add-435f-8a64-b2220d0187ee
+# ╠═97fee9e5-41dd-406a-8c2f-ea601fc94e7e
+# ╠═c92f1843-a907-4f8f-8941-f4ca5071062c
+# ╠═e489c6c2-35cf-4b39-ac11-69ac9218205e
+# ╟─df7039f2-8429-4a25-88ed-070241c24aaf
+# ╠═57bd0a34-687c-4d73-9824-c6067dac7b93
+# ╠═934d6fcf-5c02-46e9-b8d7-7e3d1c1ec9ea
+# ╟─97a156ee-9a3f-4e5e-aa23-c9fe522ea3b5
+# ╠═4392c5a0-10b8-4e9e-8aa4-4144be8dd353
+# ╟─1b404ac4-b395-4e6d-b309-de9612040d5b
+# ╠═d54a53a7-9a83-4006-b4ce-ff025c2ae694
+# ╟─5932dbbb-8b1f-4855-96d2-3326ad76a2c4
+# ╠═6835caa1-0e72-4406-baef-bcfb9894b13b
+# ╠═fc4c7e47-78e6-4124-81d8-5e3722c339fc
+# ╠═3dff82ea-0d48-4e43-a34d-b3d5623afc16
+# ╠═71b6156d-7737-459c-99b6-9ceb19c8a419
+# ╠═1d8ddce8-6d45-4d62-af2f-0831e52b384e
+# ╟─a313f1a5-a287-40d7-88e1-69ca2b650467
+# ╠═49b55429-7f2f-4dbd-b260-ff62ab277fae
+# ╠═f9342588-c729-4df1-b6de-f3937d94ab04
+# ╠═16747257-63be-4ffe-b672-7c34844233e8
+# ╠═66f38a0d-9a47-4926-ae6a-b02232004dd7
+# ╠═352ed7de-9ec7-48cb-a297-f2fb2a8f4aa1
+# ╠═e59b6053-a188-4943-9473-b67c6c0a0e91
+# ╠═ca5d43c5-aa04-4add-999b-a137a93bf7f6
+# ╠═829e6ec0-1722-4444-a3f4-38445dee03d7
+# ╠═cc5c17e9-733a-4e78-bde0-cf6e0b6de809
+# ╠═ec3a8618-4246-480e-a034-074d07f92251
+# ╠═0efa26a6-ee5b-4d65-9497-71801cab8fa3
+# ╠═0559f934-4840-4cfa-8a6b-32249fae6e5b
+# ╠═5f8273f2-3bba-4174-8ed9-4d210d9ed2bc
+# ╟─37ea7ff8-3790-4fb5-9de3-2613725a98f8
+# ╠═7759a826-76df-4e94-b0ad-f05bca544884
+# ╠═b3e618ca-ed0c-446b-b956-a66fa26b083c
+# ╠═6e4e0720-8002-41b2-8813-b4e945e5110a
+# ╠═2da97e74-ec36-4f35-8d43-c151e4198936
+# ╠═99eff301-6e9d-4275-af41-26b6cac2d18e
+# ╠═baaf7c7e-5fb2-473e-9490-cfc7f615512a
+# ╠═43c4aca2-a6b1-4975-a912-f73e9b6faafe
+# ╠═c1b7953e-c84a-417f-b6b6-0cc2ec9a263c
+# ╠═6c925a2b-f609-4d5f-8f70-367d94f8e7c9
+# ╠═a5316727-e467-425e-a933-c9cb05f58263
+# ╠═4484bfa9-1c38-45ea-b112-c4e523042489
+# ╠═773cf1ad-f1e5-4047-a55b-4dce38c7ee59
+# ╠═e8a305a2-238b-4bab-9ec1-4e38032d16e2
+# ╠═fc6dea07-cb3d-423c-a919-5300282d6f74
+# ╠═e50a0e37-14aa-4f51-8298-852c10495764
+# ╠═17ad6083-cbcc-4d67-b86e-c4a8e41eccb3
+# ╠═04966c57-3b8b-48b3-9e8c-df21e4bbbac4
+# ╠═29a30360-97ed-4166-b18e-d74832887b92
+# ╠═88d50f18-8e2a-4c57-aac4-fc5d6fba9eac
+# ╠═28c9cfea-363d-4b19-9dc8-a09674c1737c
+# ╠═7738f6c3-10d2-42a2-bddc-ea136044f55d
+# ╠═cd0eace1-009e-46fe-b07c-1436d5f4248d
+# ╠═68bbf33b-c023-47e2-91e3-5537fe23bf9d
+# ╠═2a07c8e9-8723-41db-a164-b22e06749364
+# ╠═b0bb4eb8-fe42-457e-bbdb-ad608a8770d7
+# ╠═1dca1b60-638a-4c94-9f44-103de9fbbb97
+# ╠═d28c1e76-a669-4b44-9b83-77d9dc1830f3
+# ╠═db1c1077-494d-4b2a-8e23-c228a5dfddf9
+# ╠═8bcce8d6-a1ab-41f9-8926-2d54688f9f18
+# ╠═378b5ba5-f598-4706-b7a0-077100b649e3
+# ╟─e91d2756-31aa-4e7a-8509-2ca1c4465b14
+# ╠═42610446-b92c-4d5a-a24c-8d252a64b952
+# ╠═10830f2e-8ae3-41ab-b457-56785d8ac1ab
+# ╠═ae1c01f9-5e31-4f8d-9160-252421c3c184
+# ╠═e3f6801f-dd64-4fcf-b262-27b25f665d1c
+# ╟─00000000-0000-0000-0000-000000000001
+# ╟─00000000-0000-0000-0000-000000000002

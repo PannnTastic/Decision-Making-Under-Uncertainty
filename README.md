@@ -8,6 +8,12 @@ julia red CB3C33 -->
 [![Julia Academy](https://img.shields.io/badge/julia%20academy-POMDPs.jl-4063D8)](https://juliaacademy.com/courses/decision-making-under-uncertainty-with-pomdps-jl)
 [![YouTube](https://img.shields.io/badge/youtube-POMDPs.jl-CB3C33)](https://www.youtube.com/playlist?list=PLP8iPy9hna6QPqk4N8eBk0oXzLrLbOtTA)
 
+> This repository is cloned from the original Julia Academy course repo,
+> [JuliaAcademy/Decision-Making-Under-Uncertainty](https://github.com/JuliaAcademy/Decision-Making-Under-Uncertainty),
+> created and taught by [Robert Moss](https://github.com/mossr). All course
+> content and credit belongs to the original author — this fork only adds
+> package-environment fixes for running the notebooks on current Julia
+> versions, plus personal [`HandsOn` practice notebooks](#handson-notebooks).
 
 Introduction to the [`POMDPs.jl`](https://github.com/JuliaPOMDP/POMDPs.jl) framework and its ecosystem.
 
@@ -25,11 +31,15 @@ Introduction to the [`POMDPs.jl`](https://github.com/JuliaPOMDP/POMDPs.jl) frame
 The course covers how to build and solve decision making problems in uncertain environments using the POMDPs.jl ecosystem of Julia packages. Topics covered include sequential decision making frameworks—namely, Markov decision processes (MDPs) and partially observable Markov decision processes (POMDPs)—running simulations, online and offline solution methods (value iteration, Q-learning, SARSA, and Monte Carlo tree search), reinforcement learning, deep reinforcement learning (including proximal policy optimization (PPO), deep Q-networks (DQN), and actor-critic methods), imitation learning through behavior cloning of expert demonstrations, state estimation through particle filtering, belief updating, alpha vectors, approximate methods (including grid interpolation for local approximation value iteration), and black-box stress testing to validate autonomous systems. The course is intended for a wide audience—no prior MDP/POMDP knowledge is expected.
 
 # Installation
-1. [Install Julia (we used v1.6.2, other versions should work)](https://julialang.org/downloads/)
+1. Install Julia **1.10** via [juliaup](https://github.com/JuliaLang/juliaup) (recommended):
+    ```bash
+    juliaup add 1.10
+    juliaup default 1.10
+    ```
 1. [Install Pluto.jl](https://github.com/fonsp/Pluto.jl#installation)
 1. Clone this repo:
     ```bash
-    git clone https://github.com/JuliaAcademy/Decision-Making-Under-Uncertainty
+    git clone https://github.com/PannnTastic/Decision-Making-Under-Uncertainty
     ```
 1. From the Julia REPL (`julia`), run Pluto (a web browser window will pop-up):
     ```julia
@@ -40,7 +50,7 @@ The course covers how to build and solve decision making problems in uncertain e
     ```bash
     julia -E "using Pluto; Pluto.run()"
     ```
-1. From Pluto, open one of the `.jl` notebook files located in the `Decision-Making-Under-Uncertainty/notebooks/` directory—enjoy!
+1. From Pluto, open one of the `.jl` notebook files located in the `Decision-Making-Under-Uncertainty/notebooks/` directory—enjoy! Notebooks that have had their package environment embedded (pinned, known-good versions — currently `HandsOnMDP`) won't need Pluto to resolve/install anything from scratch on first open.
 
 # Lectures
 
@@ -170,6 +180,19 @@ Stress testing a black-box system using _adaptive stress testing_.
     <img src="./media/ast.png"/>
   </a>
 </p>
+
+
+# HandsOn Notebooks
+
+Personal practice notebooks that build on top of the lectures above — self-written,
+not part of the original Julia Academy course. More will be added over time.
+
+## HandsOn: MDP
+
+[![Pluto](https://img.shields.io/badge/HandsOn%20MDP-notebook-389826)](https://htmlview.glitch.me/?https://github.com/PannnTastic/Decision-Making-Under-Uncertainty/blob/master/html/HandsOnMDP.jl.html)
+
+Hands-on practice building and solving Markov Decision Processes with `POMDPs.jl`
+and `QuickPOMDPs.jl`.
 
 
 ---
