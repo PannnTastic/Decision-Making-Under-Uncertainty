@@ -187,12 +187,28 @@ Stress testing a black-box system using _adaptive stress testing_.
 Personal practice notebooks that build on top of the lectures above — self-written,
 not part of the original Julia Academy course. More will be added over time.
 
+**Starting a new one?** Duplicate [`notebooks/HandsOn-starter-template.jl`](./notebooks/HandsOn-starter-template.jl)
+instead of creating a blank Pluto notebook. It already has a pinned, known-good
+package environment embedded (`Plots`/`StatsBase` locked to versions that
+actually precompile on Julia 1.10 — see `notebooks/pluto-environment-template/README.md`
+for why that matters), plus the common `POMDPs.jl`/`PlutoUI` imports already
+in place. Adding more `using X` packages on top of it is safe — Pluto's
+package manager respects the existing version locks instead of re-resolving
+`Plots`/`StatsBase` from scratch.
+
 ## HandsOn: MDP
 
 [![Pluto](https://img.shields.io/badge/HandsOn%20MDP-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/HandsOnMDP.jl.html)
 
 Hands-on practice building and solving Markov Decision Processes with `POMDPs.jl`
 and `QuickPOMDPs.jl`.
+
+## HandsOn: POMDP
+
+[![Pluto](https://img.shields.io/badge/HandsOn%20POMDP-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/HandsOnPOMDP.jl.html)
+
+Hands-on practice building and solving POMDPs — QMDP, FIB, and point-based
+value iteration solvers on a belief-state problem.
 
 
 ---
