@@ -210,6 +210,13 @@ and `QuickPOMDPs.jl`.
 Hands-on practice building and solving POMDPs — QMDP, FIB, and point-based
 value iteration solvers on a belief-state problem.
 
+## HandsOn: Particle Filters
+
+[![Pluto](https://img.shields.io/badge/HandsOn%20Particle%20Filters-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/HandsOnParticleFilter.jl.html)
+
+Hands-on practice with state estimation via particle filtering using
+`ParticleFilters.jl`.
+
 
 ---
 Created and taught by [Robert Moss](https://github.com/mossr).
