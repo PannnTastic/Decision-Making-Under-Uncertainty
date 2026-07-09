@@ -217,6 +217,14 @@ value iteration solvers on a belief-state problem.
 Hands-on practice with state estimation via particle filtering using
 `ParticleFilters.jl`.
 
+## Playing with Gallery of POMDPs.jl
+
+[![Pluto](https://img.shields.io/badge/Gallery%20of%20POMDPs-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/PlayingWithGalleryPOMDPs.jl.html)
+
+A tour through several problems and solvers from the [POMDPs.jl gallery](https://github.com/JuliaPOMDP) —
+`RoombaPOMDPs`, `DroneSurveillance`, `RockSample`, `TagPOMDPProblem` — solved
+with `BasicPOMCP`, `ARDESPOT`, `QMDP`, `FIB`, `MCTS`, and `NativeSARSOP`.
+
 
 ---
 Created and taught by [Robert Moss](https://github.com/mossr).
