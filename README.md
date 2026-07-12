@@ -217,6 +217,20 @@ value iteration solvers on a belief-state problem.
 Hands-on practice with state estimation via particle filtering using
 `ParticleFilters.jl`.
 
+## HandsOn: Approximate Methods
+
+[![Pluto](https://img.shields.io/badge/HandsOn%20Approximate%20Methods-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/HandsOnApproximateMethods.jl.html)
+
+Hands-on practice solving the continuous-state Mountain Car problem with
+local function approximation and grid interpolation.
+
+## HandsOn: Deep Reinforcement Learning
+
+[![Pluto](https://img.shields.io/badge/HandsOn%20Deep%20RL-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/HandsOnDeepRL.jl.html)
+
+Hands-on practice solving the Swinging Pendulum problem with actor-critic
+methods and deep Q-networks.
+
 ## Playing with Gallery of POMDPs.jl
 
 [![Pluto](https://img.shields.io/badge/Gallery%20of%20POMDPs-notebook-389826)](https://pannntastic.github.io/Decision-Making-Under-Uncertainty/html/PlayingWithGalleryPOMDPs.jl.html)
